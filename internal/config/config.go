@@ -119,6 +119,7 @@ func getEnv(key, fallback string) string {
 func getDatabaseURL() string {
 	// Если DATABASE_URL задан напрямую, используем его
 	if dbURL := getEnv("DATABASE_URL", ""); dbURL != "" {
+		log.Printf("config: используем DATABASE_URL (host: %s)", extractHostFromURL(dbURL))
 		return dbURL
 	}
 
@@ -129,6 +130,10 @@ func getDatabaseURL() string {
 	password := getEnv("POSTGRESQL_PASSWORD", "")
 	dbname := getEnv("POSTGRESQL_DBNAME", "")
 
+	// Логируем, какие переменные найдены
+	log.Printf("config: POSTGRESQL_HOST=%s, POSTGRESQL_USER=%s, POSTGRESQL_DBNAME=%s", 
+		host, user, dbname)
+
 	// Если все переменные заданы, собираем URL
 	if host != "" && user != "" && dbname != "" {
 		// URL-кодируем пароль и имя пользователя для безопасности
@@ -137,11 +142,22 @@ func getDatabaseURL() string {
 		
 		dbURL := fmt.Sprintf("postgres://%s@%s:%s/%s?sslmode=disable",
 			userInfo.String(), host, port, dbname)
+		log.Printf("config: собран DATABASE_URL из переменных окружения (host: %s)", host)
 		return dbURL
 	}
 
 	// Если ничего не задано, возвращаем дефолт
+	log.Printf("config: WARNING - переменные базы данных не найдены, используем дефолтный localhost")
 	return "postgres://postgres:123@localhost:5432/freelance_ai?sslmode=disable"
+}
+
+// extractHostFromURL извлекает хост из URL для логирования
+func extractHostFromURL(dbURL string) string {
+	parsed, err := url.Parse(dbURL)
+	if err != nil {
+		return "unknown"
+	}
+	return parsed.Host
 }
 
 // mustParseDuration безопасно парсит строку в duration.
