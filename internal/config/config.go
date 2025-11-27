@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -39,10 +40,13 @@ func Load() (*Config, error) {
 
 	env := getEnv("APP_ENV", "development")
 
+	// Получаем DatabaseURL - либо напрямую, либо собираем из отдельных переменных
+	databaseURL := getDatabaseURL()
+
 	cfg := &Config{
 		Env:              env,
 		HTTPPort:         getEnv("HTTP_PORT", "8080"),
-		DatabaseURL:      getEnv("DATABASE_URL", "postgres://postgres:123@localhost:5432/freelance_ai?sslmode=disable"),
+		DatabaseURL:      databaseURL,
 		MediaStoragePath: getEnv("MEDIA_STORAGE_PATH", "./storage/media"),
 		AIBaseURL:        getEnv("AI_BASE_URL", "http://localhost:9000"),
 		AIModel:          getEnv("AI_MODEL", "gpt-4o-mini"),
@@ -109,6 +113,35 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// getDatabaseURL возвращает DATABASE_URL либо из переменной, либо собирает из отдельных переменных.
+func getDatabaseURL() string {
+	// Если DATABASE_URL задан напрямую, используем его
+	if dbURL := getEnv("DATABASE_URL", ""); dbURL != "" {
+		return dbURL
+	}
+
+	// Иначе собираем из отдельных переменных (формат платформы)
+	host := getEnv("POSTGRESQL_HOST", "")
+	port := getEnv("POSTGRESQL_PORT", "5432")
+	user := getEnv("POSTGRESQL_USER", "")
+	password := getEnv("POSTGRESQL_PASSWORD", "")
+	dbname := getEnv("POSTGRESQL_DBNAME", "")
+
+	// Если все переменные заданы, собираем URL
+	if host != "" && user != "" && dbname != "" {
+		// URL-кодируем пароль и имя пользователя для безопасности
+		// Используем url.UserPassword для правильного кодирования
+		userInfo := url.UserPassword(user, password)
+		
+		dbURL := fmt.Sprintf("postgres://%s@%s:%s/%s?sslmode=disable",
+			userInfo.String(), host, port, dbname)
+		return dbURL
+	}
+
+	// Если ничего не задано, возвращаем дефолт
+	return "postgres://postgres:123@localhost:5432/freelance_ai?sslmode=disable"
 }
 
 // mustParseDuration безопасно парсит строку в duration.
