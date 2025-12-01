@@ -2168,6 +2168,343 @@ func (c *Client) post(ctx context.Context, path string, payload any) (map[string
 	return result, nil
 }
 
+// GenerateOrderSuggestions генерирует предложения для создания заказа (навыки, бюджет, сроки и т.д.)
+func (c *Client) GenerateOrderSuggestions(ctx context.Context, title, description string) (map[string]interface{}, error) {
+	prompt := fmt.Sprintf(`Ты - AI помощник для создания заказов на фриланс-платформе.
+
+На основе заказа:
+Название: "%s"
+Описание: "%s"
+
+Проанализируй заказ и предложи оптимальные значения для:
+1. Навыки (skills) - список технологий/инструментов, которые нужны для выполнения заказа (массив строк, минимум 2-3 навыка)
+2. Бюджет (budget_min и budget_max) - минимальная и максимальная стоимость в рублях (числа)
+3. Срок (deadline_days) - количество дней на выполнение от сегодня (число)
+4. Файлы (needs_attachments) - нужны ли прикрепленные файлы (boolean)
+5. Описание файлов (attachment_description) - зачем нужны файлы (строка, если needs_attachments = true)
+
+КРИТИЧЕСКИ ВАЖНО: 
+- Ответь ТОЛЬКО валидным JSON объектом
+- НЕ добавляй никакого текста до или после JSON
+- НЕ используй markdown код блоки
+- JSON должен начинаться с { и заканчиваться }
+- Все поля обязательны, используй пустые значения если не уверен
+
+Пример правильного ответа:
+{
+  "skills": ["Vue.js", "TypeScript", "Node.js"],
+  "budget_min": 50000,
+  "budget_max": 100000,
+  "deadline_days": 30,
+  "needs_attachments": true,
+  "attachment_description": "Рекомендуется прикрепить примеры дизайна или техническое задание"
+}`, title, description)
+
+	messages := []map[string]string{
+		{"role": "system", "content": "Ты помощник для фриланс-платформы. Анализируй заказы и предлагай оптимальные значения для создания. Всегда отвечай валидным JSON без дополнительного текста."},
+		{"role": "user", "content": prompt},
+	}
+
+	response, err := c.chatCompletion(ctx, messages)
+	if err != nil {
+		return nil, err
+	}
+
+	// Парсим JSON ответ
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(response), &result); err != nil {
+		// Fallback: пытаемся извлечь JSON из текста
+		result = parseJSONFromText(response)
+	}
+
+	return result, nil
+}
+
+// StreamGenerateOrderSuggestions генерирует предложения для создания заказа потоково
+func (c *Client) StreamGenerateOrderSuggestions(
+	ctx context.Context,
+	title, description string,
+	onDelta func(chunk string) error,
+) error {
+	prompt := fmt.Sprintf(`Ты - AI помощник для создания заказов на фриланс-платформе.
+
+На основе заказа:
+Название: "%s"
+Описание: "%s"
+
+Проанализируй заказ и предложи оптимальные значения для:
+1. Навыки (skills) - список технологий/инструментов, которые нужны для выполнения заказа (массив строк, минимум 2-3 навыка)
+2. Бюджет (budget_min и budget_max) - минимальная и максимальная стоимость в рублях (числа)
+3. Срок (deadline_days) - количество дней на выполнение от сегодня (число)
+4. Файлы (needs_attachments) - нужны ли прикрепленные файлы (boolean)
+5. Описание файлов (attachment_description) - зачем нужны файлы (строка, если needs_attachments = true)
+
+КРИТИЧЕСКИ ВАЖНО: 
+- Ответь ТОЛЬКО валидным JSON объектом
+- НЕ добавляй никакого текста до или после JSON
+- НЕ используй markdown код блоки
+- JSON должен начинаться с { и заканчиваться }
+- Все поля обязательны, используй пустые значения если не уверен
+
+Пример правильного ответа:
+{
+  "skills": ["Vue.js", "TypeScript", "Node.js"],
+  "budget_min": 50000,
+  "budget_max": 100000,
+  "deadline_days": 30,
+  "needs_attachments": true,
+  "attachment_description": "Рекомендуется прикрепить примеры дизайна или техническое задание"
+}`, title, description)
+
+	input := []map[string]any{
+		{
+			"type": "message",
+			"role": "user",
+			"content": []map[string]any{
+				{
+					"type": "input_text",
+					"text": prompt,
+				},
+			},
+		},
+	}
+
+	return c.streamInput(ctx, input, onDelta)
+}
+
+// GenerateOrderSkills генерирует список навыков для заказа
+func (c *Client) GenerateOrderSkills(ctx context.Context, title, description string) ([]string, error) {
+	prompt := fmt.Sprintf(`Ты - AI помощник для создания заказов на фриланс-платформе.
+
+На основе заказа:
+Название: "%s"
+Описание: "%s"
+
+Определи необходимые навыки и технологии (массив строк).
+
+ВАЖНО: Ответь ТОЛЬКО валидным JSON массивом без дополнительного текста:
+["React", "TypeScript", "Node.js"]`, title, description)
+
+	messages := []map[string]string{
+		{"role": "system", "content": "Ты помощник для фриланс-платформы. Анализируй заказы и определяй необходимые навыки. Всегда отвечай валидным JSON массивом без дополнительного текста."},
+		{"role": "user", "content": prompt},
+	}
+
+	response, err := c.chatCompletion(ctx, messages)
+	if err != nil {
+		return nil, err
+	}
+
+	// Парсим JSON ответ
+	var skills []string
+	if err := json.Unmarshal([]byte(response), &skills); err != nil {
+		// Пытаемся распарсить объект с полем skills
+		var result map[string]interface{}
+		if err2 := json.Unmarshal([]byte(response), &result); err2 == nil {
+			if skillsVal, ok := result["skills"].([]interface{}); ok {
+				skills = make([]string, len(skillsVal))
+				for i, v := range skillsVal {
+					if str, ok := v.(string); ok {
+						skills[i] = str
+					}
+				}
+			}
+		}
+	}
+
+	return skills, nil
+}
+
+// StreamGenerateOrderSkills генерирует список навыков для заказа потоково
+func (c *Client) StreamGenerateOrderSkills(
+	ctx context.Context,
+	title, description string,
+	onDelta func(chunk string) error,
+) error {
+	prompt := fmt.Sprintf(`Ты - AI помощник для создания заказов на фриланс-платформе.
+
+На основе заказа:
+Название: "%s"
+Описание: "%s"
+
+Определи необходимые навыки и технологии (массив строк).
+
+ВАЖНО: Ответь ТОЛЬКО валидным JSON массивом без дополнительного текста:
+["React", "TypeScript", "Node.js"]`, title, description)
+
+	input := []map[string]any{
+		{
+			"type": "message",
+			"role": "user",
+			"content": []map[string]any{
+				{
+					"type": "input_text",
+					"text": prompt,
+				},
+			},
+		},
+	}
+
+	return c.streamInput(ctx, input, onDelta)
+}
+
+// GenerateOrderBudget генерирует предложение бюджета для заказа
+func (c *Client) GenerateOrderBudget(ctx context.Context, title, description string) (map[string]interface{}, error) {
+	prompt := fmt.Sprintf(`Ты - AI помощник для создания заказов на фриланс-платформе.
+
+На основе заказа:
+Название: "%s"
+Описание: "%s"
+
+Определи оптимальный бюджет в рублях (минимальная и максимальная стоимость).
+
+ВАЖНО: Ответь ТОЛЬКО валидным JSON без дополнительного текста:
+{
+  "budget_min": 50000,
+  "budget_max": 100000
+}`, title, description)
+
+	messages := []map[string]string{
+		{"role": "system", "content": "Ты помощник для фриланс-платформы. Анализируй заказы и предлагай оптимальный бюджет. Всегда отвечай валидным JSON без дополнительного текста."},
+		{"role": "user", "content": prompt},
+	}
+
+	response, err := c.chatCompletion(ctx, messages)
+	if err != nil {
+		return nil, err
+	}
+
+	// Парсим JSON ответ
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(response), &result); err != nil {
+		// Fallback: пытаемся извлечь JSON из текста
+		result = parseJSONFromText(response)
+	}
+
+	return result, nil
+}
+
+// StreamGenerateOrderBudget генерирует предложение бюджета для заказа потоково
+func (c *Client) StreamGenerateOrderBudget(
+	ctx context.Context,
+	title, description string,
+	onDelta func(chunk string) error,
+) error {
+	prompt := fmt.Sprintf(`Ты - AI помощник для создания заказов на фриланс-платформе.
+
+На основе заказа:
+Название: "%s"
+Описание: "%s"
+
+Определи оптимальный бюджет в рублях (минимальная и максимальная стоимость).
+
+ВАЖНО: Ответь ТОЛЬКО валидным JSON без дополнительного текста:
+{
+  "budget_min": 50000,
+  "budget_max": 100000
+}`, title, description)
+
+	input := []map[string]any{
+		{
+			"type": "message",
+			"role": "user",
+			"content": []map[string]any{
+				{
+					"type": "input_text",
+					"text": prompt,
+				},
+			},
+		},
+	}
+
+	return c.streamInput(ctx, input, onDelta)
+}
+
+// GenerateWelcomeMessage генерирует приветственное сообщение для нового пользователя
+func (c *Client) GenerateWelcomeMessage(ctx context.Context, userRole string) (string, error) {
+	roleText := "заказчика"
+	if userRole == "freelancer" {
+		roleText = "фрилансера"
+	}
+
+	prompt := fmt.Sprintf(`Привет! Я AI-помощник. Помоги новому %s начать работу на платформе. Дай краткое приветствие (2-3 предложения) и объясни, как я могу помочь.`, roleText)
+
+	systemPrompt := "Ты помощник для фриланс-платформы. Создавай дружелюбные и полезные приветственные сообщения для новых пользователей."
+	if userRole == "client" {
+		systemPrompt += " Пользователь - заказчик. Расскажи о возможностях создания заказов и поиска исполнителей."
+	} else if userRole == "freelancer" {
+		systemPrompt += " Пользователь - фрилансер. Расскажи о возможностях поиска заказов и создания портфолио."
+	}
+
+	messages := []map[string]string{
+		{"role": "system", "content": systemPrompt},
+		{"role": "user", "content": prompt},
+	}
+
+	response, err := c.chatCompletion(ctx, messages)
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(response), nil
+}
+
+// StreamGenerateWelcomeMessage генерирует приветственное сообщение потоково
+func (c *Client) StreamGenerateWelcomeMessage(
+	ctx context.Context,
+	userRole string,
+	onDelta func(chunk string) error,
+) error {
+	roleText := "заказчика"
+	if userRole == "freelancer" {
+		roleText = "фрилансера"
+	}
+
+	prompt := fmt.Sprintf(`Привет! Я AI-помощник. Помоги новому %s начать работу на платформе. Дай краткое приветствие (2-3 предложения) и объясни, как я могу помочь.`, roleText)
+
+	input := []map[string]any{
+		{
+			"type": "message",
+			"role": "user",
+			"content": []map[string]any{
+				{
+					"type": "input_text",
+					"text": prompt,
+				},
+			},
+		},
+	}
+
+	return c.streamInput(ctx, input, onDelta)
+}
+
+// parseJSONFromText пытается извлечь JSON из текста, который может содержать markdown или другие символы
+func parseJSONFromText(text string) map[string]interface{} {
+	result := make(map[string]interface{})
+
+	// Пытаемся найти JSON объект в тексте
+	jsonStart := strings.Index(text, "{")
+	jsonEnd := strings.LastIndex(text, "}")
+	if jsonStart != -1 && jsonEnd != -1 && jsonEnd > jsonStart {
+		jsonStr := text[jsonStart : jsonEnd+1]
+		if err := json.Unmarshal([]byte(jsonStr), &result); err == nil {
+			return result
+		}
+	}
+
+	// Пытаемся найти JSON в markdown блоке
+	if strings.Contains(text, "```") {
+		codeBlockMatch := regexp.MustCompile("```(?:json)?\\s*([\\s\\S]*?)\\s*```").FindStringSubmatch(text)
+		if len(codeBlockMatch) > 1 {
+			if err := json.Unmarshal([]byte(codeBlockMatch[1]), &result); err == nil {
+				return result
+			}
+		}
+	}
+
+	return result
+}
+
 // fallbackSummary формирует простое описание.
 func fallbackSummary(title, description string) string {
 	desc := strings.TrimSpace(description)

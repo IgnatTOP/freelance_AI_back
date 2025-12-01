@@ -2788,6 +2788,403 @@ func (h *OrderHandler) StreamImprovePortfolioItem(c *gin.Context) {
 	}
 }
 
+// GenerateOrderSuggestions обрабатывает POST /ai/orders/suggestions - генерирует предложения для создания заказа.
+func (h *OrderHandler) GenerateOrderSuggestions(c *gin.Context) {
+	userID, err := currentUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	user, err := h.users.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "пользователь не найден"})
+		return
+	}
+	if user.Role != "client" && user.Role != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "только заказчики могут генерировать предложения для заказов"})
+		return
+	}
+
+	var req struct {
+		Title       string `json:"title" binding:"required"`
+		Description string `json:"description"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if h.orders == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI сервис недоступен"})
+		return
+	}
+
+	suggestions, err := h.orders.GenerateOrderSuggestions(c.Request.Context(), req.Title, req.Description)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, suggestions)
+}
+
+// StreamGenerateOrderSuggestions обрабатывает POST /ai/orders/suggestions/stream - генерирует предложения потоково.
+func (h *OrderHandler) StreamGenerateOrderSuggestions(c *gin.Context) {
+	userID, err := currentUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	user, err := h.users.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "пользователь не найден"})
+		return
+	}
+	if user.Role != "client" && user.Role != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "только заказчики могут генерировать предложения для заказов"})
+		return
+	}
+
+	var req struct {
+		Title       string `json:"title" binding:"required"`
+		Description string `json:"description"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// SSE заголовки
+	c.Writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "стриминг не поддерживается"})
+		return
+	}
+
+	err = h.orders.StreamGenerateOrderSuggestions(
+		c.Request.Context(),
+		req.Title,
+		req.Description,
+		func(chunk string) error {
+			if _, writeErr := writeSSEData(c.Writer, chunk); writeErr != nil {
+				return writeErr
+			}
+			flusher.Flush()
+			return nil
+		},
+	)
+
+	if err != nil {
+		_, _ = writeSSEEvent(c.Writer, "error", err.Error())
+		flusher.Flush()
+	}
+}
+
+// GenerateOrderSkills обрабатывает POST /ai/orders/skills - генерирует список навыков для заказа.
+func (h *OrderHandler) GenerateOrderSkills(c *gin.Context) {
+	userID, err := currentUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	user, err := h.users.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "пользователь не найден"})
+		return
+	}
+	if user.Role != "client" && user.Role != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "только заказчики могут генерировать навыки для заказов"})
+		return
+	}
+
+	var req struct {
+		Title       string `json:"title" binding:"required"`
+		Description string `json:"description"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if h.orders == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI сервис недоступен"})
+		return
+	}
+
+	skills, err := h.orders.GenerateOrderSkills(c.Request.Context(), req.Title, req.Description)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"skills": skills})
+}
+
+// StreamGenerateOrderSkills обрабатывает POST /ai/orders/skills/stream - генерирует список навыков потоково.
+func (h *OrderHandler) StreamGenerateOrderSkills(c *gin.Context) {
+	userID, err := currentUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	user, err := h.users.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "пользователь не найден"})
+		return
+	}
+	if user.Role != "client" && user.Role != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "только заказчики могут генерировать навыки для заказов"})
+		return
+	}
+
+	var req struct {
+		Title       string `json:"title" binding:"required"`
+		Description string `json:"description"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// SSE заголовки
+	c.Writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "стриминг не поддерживается"})
+		return
+	}
+
+	err = h.orders.StreamGenerateOrderSkills(
+		c.Request.Context(),
+		req.Title,
+		req.Description,
+		func(chunk string) error {
+			if _, writeErr := writeSSEData(c.Writer, chunk); writeErr != nil {
+				return writeErr
+			}
+			flusher.Flush()
+			return nil
+		},
+	)
+
+	if err != nil {
+		_, _ = writeSSEEvent(c.Writer, "error", err.Error())
+		flusher.Flush()
+	}
+}
+
+// GenerateOrderBudget обрабатывает POST /ai/orders/budget - генерирует предложение бюджета для заказа.
+func (h *OrderHandler) GenerateOrderBudget(c *gin.Context) {
+	userID, err := currentUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	user, err := h.users.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "пользователь не найден"})
+		return
+	}
+	if user.Role != "client" && user.Role != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "только заказчики могут генерировать бюджет для заказов"})
+		return
+	}
+
+	var req struct {
+		Title       string `json:"title" binding:"required"`
+		Description string `json:"description"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if h.orders == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI сервис недоступен"})
+		return
+	}
+
+	budget, err := h.orders.GenerateOrderBudget(c.Request.Context(), req.Title, req.Description)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, budget)
+}
+
+// StreamGenerateOrderBudget обрабатывает POST /ai/orders/budget/stream - генерирует предложение бюджета потоково.
+func (h *OrderHandler) StreamGenerateOrderBudget(c *gin.Context) {
+	userID, err := currentUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	user, err := h.users.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "пользователь не найден"})
+		return
+	}
+	if user.Role != "client" && user.Role != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "только заказчики могут генерировать бюджет для заказов"})
+		return
+	}
+
+	var req struct {
+		Title       string `json:"title" binding:"required"`
+		Description string `json:"description"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// SSE заголовки
+	c.Writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "стриминг не поддерживается"})
+		return
+	}
+
+	err = h.orders.StreamGenerateOrderBudget(
+		c.Request.Context(),
+		req.Title,
+		req.Description,
+		func(chunk string) error {
+			if _, writeErr := writeSSEData(c.Writer, chunk); writeErr != nil {
+				return writeErr
+			}
+			flusher.Flush()
+			return nil
+		},
+	)
+
+	if err != nil {
+		_, _ = writeSSEEvent(c.Writer, "error", err.Error())
+		flusher.Flush()
+	}
+}
+
+// GenerateWelcomeMessage обрабатывает POST /ai/welcome-message - генерирует приветственное сообщение.
+func (h *OrderHandler) GenerateWelcomeMessage(c *gin.Context) {
+	userID, err := currentUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	user, err := h.users.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "пользователь не найден"})
+		return
+	}
+
+	var req struct {
+		UserRole string `json:"user_role"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// Если роль не передана, используем роль из профиля пользователя
+		req.UserRole = user.Role
+	}
+
+	if req.UserRole == "" {
+		req.UserRole = user.Role
+	}
+
+	if h.orders == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI сервис недоступен"})
+		return
+	}
+
+	message, err := h.orders.GenerateWelcomeMessage(c.Request.Context(), req.UserRole)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": message})
+}
+
+// StreamGenerateWelcomeMessage обрабатывает POST /ai/welcome-message/stream - генерирует приветственное сообщение потоково.
+func (h *OrderHandler) StreamGenerateWelcomeMessage(c *gin.Context) {
+	userID, err := currentUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+
+	user, err := h.users.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "пользователь не найден"})
+		return
+	}
+
+	var req struct {
+		UserRole string `json:"user_role"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// Если роль не передана, используем роль из профиля пользователя
+		req.UserRole = user.Role
+	}
+
+	if req.UserRole == "" {
+		req.UserRole = user.Role
+	}
+
+	// SSE заголовки
+	c.Writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "стриминг не поддерживается"})
+		return
+	}
+
+	err = h.orders.StreamGenerateWelcomeMessage(
+		c.Request.Context(),
+		req.UserRole,
+		func(chunk string) error {
+			if _, writeErr := writeSSEData(c.Writer, chunk); writeErr != nil {
+				return writeErr
+			}
+			flusher.Flush()
+			return nil
+		},
+	)
+
+	if err != nil {
+		_, _ = writeSSEEvent(c.Writer, "error", err.Error())
+		flusher.Flush()
+	}
+}
+
 // parseIntQuery безопасно читает query параметр.
 func parseIntQuery(c *gin.Context, key string, fallback int) int {
 	if v := c.Query(key); v != "" {

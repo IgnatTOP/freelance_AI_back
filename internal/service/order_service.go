@@ -97,6 +97,14 @@ type AIHelper interface {
 	StreamRecommendPriceAndTimeline(ctx context.Context, order *models.Order, requirements []models.OrderRequirement, freelancerProfile *models.Profile, otherProposals []*models.Proposal, onDelta func(chunk string) error, onComplete func(recommendation *models.PriceTimelineRecommendation) error) error
 	AIChatAssistant(ctx context.Context, userMessage string, userRole string, contextData map[string]interface{}) (string, error)
 	StreamAIChatAssistant(ctx context.Context, userMessage string, userRole string, contextData map[string]interface{}, onDelta func(chunk string) error) error
+	GenerateOrderSuggestions(ctx context.Context, title, description string) (map[string]interface{}, error)
+	StreamGenerateOrderSuggestions(ctx context.Context, title, description string, onDelta func(chunk string) error) error
+	GenerateOrderSkills(ctx context.Context, title, description string) ([]string, error)
+	StreamGenerateOrderSkills(ctx context.Context, title, description string, onDelta func(chunk string) error) error
+	GenerateOrderBudget(ctx context.Context, title, description string) (map[string]interface{}, error)
+	StreamGenerateOrderBudget(ctx context.Context, title, description string, onDelta func(chunk string) error) error
+	GenerateWelcomeMessage(ctx context.Context, userRole string) (string, error)
+	StreamGenerateWelcomeMessage(ctx context.Context, userRole string, onDelta func(chunk string) error) error
 }
 
 // WSNotifier интерфейс для отправки WebSocket уведомлений.
@@ -890,6 +898,70 @@ func (s *OrderService) StreamGenerateOrderDescription(ctx context.Context, title
 		return fmt.Errorf("order service: AI сервис недоступен")
 	}
 	return s.ai.StreamGenerateOrderDescription(ctx, title, briefDescription, skills, onDelta)
+}
+
+// GenerateOrderSuggestions генерирует предложения для создания заказа (навыки, бюджет, сроки и т.д.)
+func (s *OrderService) GenerateOrderSuggestions(ctx context.Context, title, description string) (map[string]interface{}, error) {
+	if s.ai == nil {
+		return nil, fmt.Errorf("order service: AI сервис недоступен")
+	}
+	return s.ai.GenerateOrderSuggestions(ctx, title, description)
+}
+
+// StreamGenerateOrderSuggestions генерирует предложения для создания заказа потоково
+func (s *OrderService) StreamGenerateOrderSuggestions(ctx context.Context, title, description string, onDelta func(chunk string) error) error {
+	if s.ai == nil {
+		return fmt.Errorf("order service: AI сервис недоступен")
+	}
+	return s.ai.StreamGenerateOrderSuggestions(ctx, title, description, onDelta)
+}
+
+// GenerateOrderSkills генерирует список навыков для заказа
+func (s *OrderService) GenerateOrderSkills(ctx context.Context, title, description string) ([]string, error) {
+	if s.ai == nil {
+		return nil, fmt.Errorf("order service: AI сервис недоступен")
+	}
+	return s.ai.GenerateOrderSkills(ctx, title, description)
+}
+
+// StreamGenerateOrderSkills генерирует список навыков для заказа потоково
+func (s *OrderService) StreamGenerateOrderSkills(ctx context.Context, title, description string, onDelta func(chunk string) error) error {
+	if s.ai == nil {
+		return fmt.Errorf("order service: AI сервис недоступен")
+	}
+	return s.ai.StreamGenerateOrderSkills(ctx, title, description, onDelta)
+}
+
+// GenerateOrderBudget генерирует предложение бюджета для заказа
+func (s *OrderService) GenerateOrderBudget(ctx context.Context, title, description string) (map[string]interface{}, error) {
+	if s.ai == nil {
+		return nil, fmt.Errorf("order service: AI сервис недоступен")
+	}
+	return s.ai.GenerateOrderBudget(ctx, title, description)
+}
+
+// StreamGenerateOrderBudget генерирует предложение бюджета для заказа потоково
+func (s *OrderService) StreamGenerateOrderBudget(ctx context.Context, title, description string, onDelta func(chunk string) error) error {
+	if s.ai == nil {
+		return fmt.Errorf("order service: AI сервис недоступен")
+	}
+	return s.ai.StreamGenerateOrderBudget(ctx, title, description, onDelta)
+}
+
+// GenerateWelcomeMessage генерирует приветственное сообщение для нового пользователя
+func (s *OrderService) GenerateWelcomeMessage(ctx context.Context, userRole string) (string, error) {
+	if s.ai == nil {
+		return "", fmt.Errorf("order service: AI сервис недоступен")
+	}
+	return s.ai.GenerateWelcomeMessage(ctx, userRole)
+}
+
+// StreamGenerateWelcomeMessage генерирует приветственное сообщение потоково
+func (s *OrderService) StreamGenerateWelcomeMessage(ctx context.Context, userRole string, onDelta func(chunk string) error) error {
+	if s.ai == nil {
+		return fmt.Errorf("order service: AI сервис недоступен")
+	}
+	return s.ai.StreamGenerateWelcomeMessage(ctx, userRole, onDelta)
 }
 
 // GenerateProposal генерирует отклик на заказ с помощью AI.
