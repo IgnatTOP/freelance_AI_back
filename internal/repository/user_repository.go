@@ -352,6 +352,16 @@ func (r *UserRepository) GetUserStats(ctx context.Context, userID uuid.UUID) (*m
 	// Округляем средний рейтинг до 2 знаков после запятой
 	stats.AverageRating = float64(int(stats.AverageRating*100)) / 100
 
+	// Подсчитываем общий заработок фрилансера из освобождённых escrow
+	earningsQuery := `
+		SELECT COALESCE(SUM(amount), 0)
+		FROM escrow
+		WHERE freelancer_id = $1 AND status = 'released'
+	`
+	if err := r.db.GetContext(ctx, &stats.TotalEarnings, earningsQuery, userID); err != nil {
+		stats.TotalEarnings = 0
+	}
+
 	return stats, nil
 }
 
