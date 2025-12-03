@@ -69,7 +69,7 @@ func (r *OrderRepositoryAdapter) Update(ctx context.Context, order *entity.Order
 		SET title = $2, description = $3, budget_min = $4, budget_max = $5, 
 		    status = $6, deadline_at = $7, ai_summary = $8, 
 		    best_recommendation_proposal_id = $9, best_recommendation_justification = $10,
-		    ai_analysis_updated_at = $11, updated_at = $12
+		    ai_analysis_updated_at = $11, freelancer_id = $12, updated_at = $13
 		WHERE id = $1
 	`
 	
@@ -85,6 +85,7 @@ func (r *OrderRepositoryAdapter) Update(ctx context.Context, order *entity.Order
 		order.BestRecommendationProposalID,
 		order.BestRecommendationJustification,
 		order.AIAnalysisUpdatedAt,
+		order.FreelancerID,
 		order.UpdatedAt,
 	)
 	if err != nil {
@@ -119,7 +120,7 @@ func (r *OrderRepositoryAdapter) FindByID(ctx context.Context, id uuid.UUID) (*e
 	var status string
 	
 	query := `
-		SELECT id, client_id, title, description, budget_min, budget_max, status, deadline_at, 
+		SELECT id, client_id, freelancer_id, title, description, budget_min, budget_max, status, deadline_at, 
 		       ai_summary, best_recommendation_proposal_id, best_recommendation_justification, 
 		       ai_analysis_updated_at, created_at, updated_at
 		FROM orders
@@ -129,6 +130,7 @@ func (r *OrderRepositoryAdapter) FindByID(ctx context.Context, id uuid.UUID) (*e
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&order.ID,
 		&order.ClientID,
+		&order.FreelancerID,
 		&order.Title,
 		&order.Description,
 		&budgetMin,
@@ -182,7 +184,7 @@ func (r *OrderRepositoryAdapter) FindByIDWithDetails(ctx context.Context, id uui
 
 func (r *OrderRepositoryAdapter) FindByClientID(ctx context.Context, clientID uuid.UUID) ([]*entity.Order, error) {
 	query := `
-		SELECT id, client_id, title, description, budget_min, budget_max, status, deadline_at, 
+		SELECT id, client_id, freelancer_id, title, description, budget_min, budget_max, status, deadline_at, 
 		       ai_summary, best_recommendation_proposal_id, best_recommendation_justification, 
 		       ai_analysis_updated_at, created_at, updated_at
 		FROM orders
@@ -205,6 +207,7 @@ func (r *OrderRepositoryAdapter) FindByClientID(ctx context.Context, clientID uu
 		err := rows.Scan(
 			&order.ID,
 			&order.ClientID,
+			&order.FreelancerID,
 			&order.Title,
 			&order.Description,
 			&budgetMin,
@@ -278,7 +281,7 @@ func (r *OrderRepositoryAdapter) List(ctx context.Context, filter repository.Ord
 		sortOrder = "ASC"
 	}
 
-	selectQuery := fmt.Sprintf(`SELECT id, client_id, title, description, budget_min, budget_max, status, deadline_at, 
+	selectQuery := fmt.Sprintf(`SELECT id, client_id, freelancer_id, title, description, budget_min, budget_max, status, deadline_at, 
 		ai_summary, best_recommendation_proposal_id, best_recommendation_justification, 
 		ai_analysis_updated_at, created_at, updated_at %s ORDER BY %s %s LIMIT $%d OFFSET $%d`,
 		baseQuery, sortBy, sortOrder, argNum, argNum+1)
@@ -297,7 +300,7 @@ func (r *OrderRepositoryAdapter) List(ctx context.Context, filter repository.Ord
 		var status string
 
 		err := rows.Scan(
-			&order.ID, &order.ClientID, &order.Title, &order.Description,
+			&order.ID, &order.ClientID, &order.FreelancerID, &order.Title, &order.Description,
 			&budgetMin, &budgetMax, &status, &order.DeadlineAt,
 			&order.AISummary, &order.BestRecommendationProposalID, &order.BestRecommendationJustification,
 			&order.AIAnalysisUpdatedAt, &order.CreatedAt, &order.UpdatedAt,

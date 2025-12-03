@@ -11,6 +11,7 @@ import (
 type Order struct {
 	ID                              uuid.UUID
 	ClientID                        uuid.UUID
+	FreelancerID                    *uuid.UUID
 	Title                           string
 	Description                     string
 	Budget                          valueobject.Budget
@@ -80,11 +81,12 @@ func (o *Order) Publish() error {
 	return nil
 }
 
-func (o *Order) StartWork() error {
+func (o *Order) StartWork(freelancerID uuid.UUID) error {
 	if !o.Status.CanTransitionTo(valueobject.OrderStatusInProgress) {
 		return apperror.New(apperror.ErrCodeBadRequest, "невозможно начать работу в текущем статусе")
 	}
 	o.Status = valueobject.OrderStatusInProgress
+	o.FreelancerID = &freelancerID
 	o.UpdatedAt = time.Now()
 	return nil
 }

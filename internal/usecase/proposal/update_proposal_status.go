@@ -43,7 +43,7 @@ func (uc *UpdateProposalStatusUseCase) Execute(ctx context.Context, proposalID, 
 			return nil, err
 		}
 		
-		if err := order.StartWork(); err != nil {
+		if err := order.StartWork(proposal.FreelancerID); err != nil {
 			return nil, err
 		}
 		
