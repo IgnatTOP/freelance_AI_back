@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/ignatzorin/freelance-backend/internal/http/handlers/common"
 	"github.com/ignatzorin/freelance-backend/internal/models"
 	"github.com/ignatzorin/freelance-backend/internal/repository"
 )
@@ -25,7 +26,7 @@ func NewStatsHandler(orders *repository.OrderRepository, users *repository.UserR
 
 // GetMyStats возвращает статистику текущего пользователя.
 func (h *StatsHandler) GetMyStats(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return

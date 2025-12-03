@@ -83,8 +83,8 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Use
 // UpsertProfile создаёт или обновляет профиль пользователя.
 func (r *UserRepository) UpsertProfile(ctx context.Context, profile *models.Profile) error {
 	query := `
-		INSERT INTO profiles (user_id, display_name, bio, hourly_rate, experience_level, skills, location, photo_id, ai_summary, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+		INSERT INTO profiles (user_id, display_name, bio, hourly_rate, experience_level, skills, location, photo_id, ai_summary, phone, telegram, website, company_name, inn, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
 		ON CONFLICT (user_id) DO UPDATE
 		SET display_name = EXCLUDED.display_name,
 			bio = EXCLUDED.bio,
@@ -94,8 +94,13 @@ func (r *UserRepository) UpsertProfile(ctx context.Context, profile *models.Prof
 			location = EXCLUDED.location,
 			photo_id = EXCLUDED.photo_id,
 			ai_summary = EXCLUDED.ai_summary,
+			phone = EXCLUDED.phone,
+			telegram = EXCLUDED.telegram,
+			website = EXCLUDED.website,
+			company_name = EXCLUDED.company_name,
+			inn = EXCLUDED.inn,
 			updated_at = NOW()
-		RETURNING user_id, display_name, bio, hourly_rate, experience_level, skills, location, photo_id, ai_summary, updated_at
+		RETURNING user_id, display_name, bio, hourly_rate, experience_level, skills, location, photo_id, ai_summary, phone, telegram, website, company_name, inn, updated_at
 	`
 
 	var skills pq.StringArray
@@ -111,6 +116,11 @@ func (r *UserRepository) UpsertProfile(ctx context.Context, profile *models.Prof
 		profile.Location,
 		profile.PhotoID,
 		profile.AISummary,
+		profile.Phone,
+		profile.Telegram,
+		profile.Website,
+		profile.CompanyName,
+		profile.INN,
 	)
 
 	if err := row.Scan(
@@ -123,6 +133,11 @@ func (r *UserRepository) UpsertProfile(ctx context.Context, profile *models.Prof
 		&profile.Location,
 		&profile.PhotoID,
 		&profile.AISummary,
+		&profile.Phone,
+		&profile.Telegram,
+		&profile.Website,
+		&profile.CompanyName,
+		&profile.INN,
 		&profile.UpdatedAt,
 	); err != nil {
 		return fmt.Errorf("user repository: upsert profile %w", err)
@@ -135,7 +150,7 @@ func (r *UserRepository) UpsertProfile(ctx context.Context, profile *models.Prof
 
 // GetProfile возвращает профиль пользователя.
 func (r *UserRepository) GetProfile(ctx context.Context, userID uuid.UUID) (*models.Profile, error) {
-	query := `SELECT user_id, display_name, bio, hourly_rate, experience_level, skills, location, photo_id, ai_summary, updated_at FROM profiles WHERE user_id = $1`
+	query := `SELECT user_id, display_name, bio, hourly_rate, experience_level, skills, location, photo_id, ai_summary, phone, telegram, website, company_name, inn, updated_at FROM profiles WHERE user_id = $1`
 	
 	var profile models.Profile
 	var skills pq.StringArray
@@ -150,6 +165,11 @@ func (r *UserRepository) GetProfile(ctx context.Context, userID uuid.UUID) (*mod
 		&profile.Location,
 		&profile.PhotoID,
 		&profile.AISummary,
+		&profile.Phone,
+		&profile.Telegram,
+		&profile.Website,
+		&profile.CompanyName,
+		&profile.INN,
 		&profile.UpdatedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -421,4 +441,100 @@ func (r *UserRepository) UpdateRole(ctx context.Context, userID uuid.UUID, role 
 	}
 
 	return nil
+}
+
+
+// FreelancerSearchParams параметры поиска фрилансеров.
+type FreelancerSearchParams struct {
+	Query           string
+	Skills          []string
+	MinHourlyRate   *float64
+	MaxHourlyRate   *float64
+	ExperienceLevel string
+	Location        string
+	MinRating       *float64
+	Limit           int
+	Offset          int
+}
+
+// SearchFreelancers ищет фрилансеров по параметрам.
+func (r *UserRepository) SearchFreelancers(ctx context.Context, params FreelancerSearchParams) ([]*models.FreelancerSearchResult, error) {
+	query := `
+		SELECT 
+			u.id, u.username, u.created_at,
+			p.display_name, p.bio, p.hourly_rate, p.experience_level, p.skills, p.location, p.photo_id,
+			COALESCE(AVG(rv.rating), 0) as avg_rating,
+			COUNT(rv.id) as review_count
+		FROM users u
+		LEFT JOIN profiles p ON u.id = p.user_id
+		LEFT JOIN reviews rv ON u.id = rv.reviewed_id
+		WHERE u.role = 'freelancer' AND u.is_active = TRUE
+	`
+	args := []interface{}{}
+	argNum := 1
+
+	if params.Query != "" {
+		query += fmt.Sprintf(` AND (p.display_name ILIKE $%d OR p.bio ILIKE $%d OR u.username ILIKE $%d)`, argNum, argNum, argNum)
+		args = append(args, "%"+params.Query+"%")
+		argNum++
+	}
+	if len(params.Skills) > 0 {
+		query += fmt.Sprintf(` AND p.skills && $%d`, argNum)
+		args = append(args, pq.Array(params.Skills))
+		argNum++
+	}
+	if params.MinHourlyRate != nil {
+		query += fmt.Sprintf(` AND p.hourly_rate >= $%d`, argNum)
+		args = append(args, *params.MinHourlyRate)
+		argNum++
+	}
+	if params.MaxHourlyRate != nil {
+		query += fmt.Sprintf(` AND p.hourly_rate <= $%d`, argNum)
+		args = append(args, *params.MaxHourlyRate)
+		argNum++
+	}
+	if params.ExperienceLevel != "" {
+		query += fmt.Sprintf(` AND p.experience_level = $%d`, argNum)
+		args = append(args, params.ExperienceLevel)
+		argNum++
+	}
+	if params.Location != "" {
+		query += fmt.Sprintf(` AND p.location ILIKE $%d`, argNum)
+		args = append(args, "%"+params.Location+"%")
+		argNum++
+	}
+
+	query += ` GROUP BY u.id, u.username, u.created_at, p.display_name, p.bio, p.hourly_rate, p.experience_level, p.skills, p.location, p.photo_id`
+
+	if params.MinRating != nil {
+		query += fmt.Sprintf(` HAVING COALESCE(AVG(rv.rating), 0) >= $%d`, argNum)
+		args = append(args, *params.MinRating)
+		argNum++
+	}
+
+	query += ` ORDER BY avg_rating DESC, review_count DESC`
+	query += fmt.Sprintf(` LIMIT $%d OFFSET $%d`, argNum, argNum+1)
+	args = append(args, params.Limit, params.Offset)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("user repository: search freelancers %w", err)
+	}
+	defer rows.Close()
+
+	var results []*models.FreelancerSearchResult
+	for rows.Next() {
+		var r models.FreelancerSearchResult
+		var skills pq.StringArray
+		if err := rows.Scan(
+			&r.ID, &r.Username, &r.CreatedAt,
+			&r.DisplayName, &r.Bio, &r.HourlyRate, &r.ExperienceLevel, &skills, &r.Location, &r.PhotoID,
+			&r.AvgRating, &r.ReviewCount,
+		); err != nil {
+			return nil, err
+		}
+		r.Skills = []string(skills)
+		results = append(results, &r)
+	}
+	return results, nil
 }

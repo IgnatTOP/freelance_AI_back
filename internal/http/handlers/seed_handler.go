@@ -11,13 +11,15 @@ import (
 
 // SeedHandler обрабатывает запросы для генерации фейковых данных.
 type SeedHandler struct {
-	seedService *service.SeedService
+	seedService         *service.SeedService
+	extendedSeedService *service.ExtendedSeedService
 }
 
 // NewSeedHandler создаёт новый seed handler.
-func NewSeedHandler(seedService *service.SeedService) *SeedHandler {
+func NewSeedHandler(seedService *service.SeedService, extendedSeedService *service.ExtendedSeedService) *SeedHandler {
 	return &SeedHandler{
-		seedService: seedService,
+		seedService:         seedService,
+		extendedSeedService: extendedSeedService,
 	}
 }
 
@@ -27,11 +29,20 @@ type SeedRequest struct {
 	NumOrders int `json:"num_orders" form:"num_orders"`
 }
 
+// SeedAccountInfo представляет информацию об аккаунте.
+type SeedAccountInfo struct {
+	Email    string `json:"email"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Role     string `json:"role"`
+}
+
 // SeedResponse представляет ответ на запрос генерации данных.
 type SeedResponse struct {
-	Message   string `json:"message"`
-	NumUsers  int    `json:"num_users"`
-	NumOrders int    `json:"num_orders"`
+	Message   string            `json:"message"`
+	NumUsers  int               `json:"num_users"`
+	NumOrders int               `json:"num_orders"`
+	Accounts  []SeedAccountInfo `json:"accounts"`
 }
 
 // Seed генерирует фейковые данные.
@@ -60,7 +71,6 @@ func (h *SeedHandler) Seed(c *gin.Context) {
 			return
 		}
 
-		// Устанавливаем значения по умолчанию
 		if req.NumUsers < 1 {
 			req.NumUsers = 50
 		}
@@ -69,7 +79,6 @@ func (h *SeedHandler) Seed(c *gin.Context) {
 		}
 	}
 
-	// Ограничиваем максимальные значения для безопасности
 	if req.NumUsers > 1000 {
 		req.NumUsers = 1000
 	}
@@ -77,8 +86,8 @@ func (h *SeedHandler) Seed(c *gin.Context) {
 		req.NumOrders = 5000
 	}
 
-	// Генерируем данные
-	if err := h.seedService.SeedData(c.Request.Context(), req.NumUsers, req.NumOrders); err != nil {
+	result, err := h.seedService.SeedData(c.Request.Context(), req.NumUsers, req.NumOrders)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "Failed to generate seed data",
 			"details": err.Error(),
@@ -86,11 +95,46 @@ func (h *SeedHandler) Seed(c *gin.Context) {
 		return
 	}
 
+	accounts := make([]SeedAccountInfo, len(result.Accounts))
+	for i, acc := range result.Accounts {
+		accounts[i] = SeedAccountInfo{
+			Email:    acc.Email,
+			Username: acc.Username,
+			Password: acc.Password,
+			Role:     acc.Role,
+		}
+	}
+
 	c.JSON(http.StatusOK, SeedResponse{
 		Message:   "Seed data generated successfully",
 		NumUsers:  req.NumUsers,
 		NumOrders: req.NumOrders,
+		Accounts:  accounts,
 	})
 }
 
+// SeedRealistic генерирует реалистичные данные как от реальных пользователей.
+// POST /api/seed/realistic
+func (h *SeedHandler) SeedRealistic(c *gin.Context) {
+	if h.extendedSeedService == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Extended seed service not available"})
+		return
+	}
 
+	result, err := h.extendedSeedService.SeedRealisticData(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to generate realistic seed data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":           "Realistic seed data generated successfully",
+		"accounts":          result.Accounts,
+		"orders_created":    result.OrdersCreated,
+		"proposals_created": result.ProposalsCreated,
+		"reviews_created":   result.ReviewsCreated,
+	})
+}

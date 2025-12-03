@@ -12,6 +12,7 @@ example_env
 *.dylib
 bin/
 server.exe
+main
 
 # Test binary, built with `go test -c`
 *.test

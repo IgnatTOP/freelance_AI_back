@@ -7,6 +7,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/ignatzorin/freelance-backend/internal/dto"
+	"github.com/ignatzorin/freelance-backend/internal/http/handlers/common"
 	"github.com/ignatzorin/freelance-backend/internal/models"
 	"github.com/ignatzorin/freelance-backend/internal/repository"
 	"github.com/ignatzorin/freelance-backend/internal/service"
@@ -25,7 +27,7 @@ func NewPortfolioHandler(portfolio *service.PortfolioService) *PortfolioHandler 
 
 // ListPortfolioItems обрабатывает GET /portfolio.
 func (h *PortfolioHandler) ListPortfolioItems(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -60,7 +62,7 @@ func (h *PortfolioHandler) ListPortfolioItems(c *gin.Context) {
 
 // CreatePortfolioItem обрабатывает POST /portfolio.
 func (h *PortfolioHandler) CreatePortfolioItem(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -151,15 +153,7 @@ func (h *PortfolioHandler) CreatePortfolioItem(c *gin.Context) {
 		media = []models.MediaFile{}
 	}
 
-	type portfolioResponse struct {
-		*models.PortfolioItem
-		Media []models.MediaFile `json:"media"`
-	}
-
-	c.JSON(http.StatusCreated, portfolioResponse{
-		PortfolioItem: item,
-		Media:         media,
-	})
+	c.JSON(http.StatusCreated, dto.NewPortfolioItemResponse(item, media))
 }
 
 // GetPortfolioItem обрабатывает GET /portfolio/:id.
@@ -187,20 +181,12 @@ func (h *PortfolioHandler) GetPortfolioItem(c *gin.Context) {
 		media = []models.MediaFile{}
 	}
 
-	type portfolioResponse struct {
-		*models.PortfolioItem
-		Media []models.MediaFile `json:"media"`
-	}
-
-	c.JSON(http.StatusOK, portfolioResponse{
-		PortfolioItem: item,
-		Media:         media,
-	})
+	c.JSON(http.StatusOK, dto.NewPortfolioItemResponse(item, media))
 }
 
 // UpdatePortfolioItem обрабатывает PUT /portfolio/:id.
 func (h *PortfolioHandler) UpdatePortfolioItem(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -301,20 +287,12 @@ func (h *PortfolioHandler) UpdatePortfolioItem(c *gin.Context) {
 		media = []models.MediaFile{}
 	}
 
-	type portfolioResponse struct {
-		*models.PortfolioItem
-		Media []models.MediaFile `json:"media"`
-	}
-
-	c.JSON(http.StatusOK, portfolioResponse{
-		PortfolioItem: item,
-		Media:         media,
-	})
+	c.JSON(http.StatusOK, dto.NewPortfolioItemResponse(item, media))
 }
 
 // DeletePortfolioItem обрабатывает DELETE /portfolio/:id.
 func (h *PortfolioHandler) DeletePortfolioItem(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -372,4 +350,3 @@ func (h *PortfolioHandler) GetUserPortfolio(c *gin.Context) {
 
 	c.JSON(http.StatusOK, result)
 }
-

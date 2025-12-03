@@ -30,6 +30,11 @@ type Profile struct {
 	Location        *string    `db:"location" json:"location,omitempty"`
 	PhotoID         *uuid.UUID `db:"photo_id" json:"photo_id,omitempty"`
 	AISummary       *string    `db:"ai_summary" json:"ai_summary,omitempty"`
+	Phone           *string    `db:"phone" json:"phone,omitempty"`
+	Telegram        *string    `db:"telegram" json:"telegram,omitempty"`
+	Website         *string    `db:"website" json:"website,omitempty"`
+	CompanyName     *string    `db:"company_name" json:"company_name,omitempty"`
+	INN             *string    `db:"inn" json:"inn,omitempty"`
 	UpdatedAt       time.Time  `db:"updated_at" json:"updated_at"`
 }
 
@@ -63,4 +68,21 @@ type PublicProfileStats struct {
 	AverageRating    float64 `json:"average_rating"`
 	TotalReviews     int     `json:"total_reviews"`
 	TotalEarnings    float64 `json:"total_earnings,omitempty"`
+}
+
+
+// FreelancerSearchResult результат поиска фрилансера.
+type FreelancerSearchResult struct {
+	ID              uuid.UUID  `json:"id"`
+	Username        string     `json:"username"`
+	DisplayName     *string    `json:"display_name,omitempty"`
+	Bio             *string    `json:"bio,omitempty"`
+	HourlyRate      *float64   `json:"hourly_rate,omitempty"`
+	ExperienceLevel *string    `json:"experience_level,omitempty"`
+	Skills          []string   `json:"skills,omitempty"`
+	Location        *string    `json:"location,omitempty"`
+	PhotoID         *uuid.UUID `json:"photo_id,omitempty"`
+	AvgRating       float64    `json:"avg_rating"`
+	ReviewCount     int        `json:"review_count"`
+	CreatedAt       time.Time  `json:"created_at"`
 }

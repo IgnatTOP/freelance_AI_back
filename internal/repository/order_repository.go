@@ -35,7 +35,7 @@ func NewOrderRepository(db *sqlx.DB) *OrderRepository {
 func (r *OrderRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Order, error) {
 	var order models.Order
 	query := `
-		SELECT id, client_id, title, description, budget_min, budget_max, status, deadline_at, ai_summary,
+		SELECT id, client_id, freelancer_id, category_id, title, description, budget_min, budget_max, final_amount, status, deadline_at, ai_summary,
 		       best_recommendation_proposal_id, best_recommendation_justification, ai_analysis_updated_at,
 		       created_at, updated_at
 		FROM orders
@@ -55,7 +55,7 @@ func (r *OrderRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Or
 func (r *OrderRepository) GetByIDWithDetails(ctx context.Context, id uuid.UUID) (*models.Order, []models.OrderRequirement, []models.OrderAttachment, error) {
 	var order models.Order
 	orderQuery := `
-		SELECT id, client_id, title, description, budget_min, budget_max, status, deadline_at, ai_summary,
+		SELECT id, client_id, freelancer_id, category_id, title, description, budget_min, budget_max, final_amount, status, deadline_at, ai_summary,
 		       best_recommendation_proposal_id, best_recommendation_justification, ai_analysis_updated_at,
 		       created_at, updated_at
 		FROM orders
@@ -643,9 +643,9 @@ func (r *OrderRepository) GetLastMessageForConversation(ctx context.Context, con
 // AddMessage добавляет сообщение в чат.
 func (r *OrderRepository) AddMessage(ctx context.Context, msg *models.Message) error {
 	query := `
-		INSERT INTO messages (conversation_id, author_type, author_id, content, ai_metadata)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, created_at
+		INSERT INTO messages (conversation_id, author_type, author_id, content, parent_message_id, ai_metadata)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, created_at, updated_at
 	`
 
 	var metadata interface{}
@@ -655,15 +655,22 @@ func (r *OrderRepository) AddMessage(ctx context.Context, msg *models.Message) e
 		metadata = string(msg.AIMetadata)
 	}
 
-	return r.db.QueryRowxContext(
+	var updatedAt time.Time
+	err := r.db.QueryRowxContext(
 		ctx,
 		query,
 		msg.ConversationID,
 		msg.AuthorType,
 		msg.AuthorID,
 		msg.Content,
+		msg.ParentMessageID,
 		metadata,
-	).Scan(&msg.ID, &msg.CreatedAt)
+	).Scan(&msg.ID, &msg.CreatedAt, &updatedAt)
+	if err != nil {
+		return err
+	}
+	msg.UpdatedAt = &updatedAt
+	return nil
 }
 
 // ListMessages возвращает сообщения чата с пагинацией.
@@ -692,6 +699,39 @@ func (r *OrderRepository) ListMessages(ctx context.Context, conversationID uuid.
 	if err := r.db.SelectContext(ctx, &messages, query, args...); err != nil {
 		return nil, fmt.Errorf("order repository: list messages %w", err)
 	}
+
+	// Загружаем вложения и реакции для всех сообщений
+	if len(messages) > 0 {
+		messageIDs := make([]uuid.UUID, len(messages))
+		for i := range messages {
+			messageIDs[i] = messages[i].ID
+		}
+
+		// Загружаем вложения
+		attachments, err := r.GetMessageAttachmentsByMessageIDs(ctx, messageIDs)
+		if err == nil {
+			attachmentsMap := make(map[uuid.UUID][]models.MessageAttachment)
+			for _, att := range attachments {
+				attachmentsMap[att.MessageID] = append(attachmentsMap[att.MessageID], att)
+			}
+			for i := range messages {
+				messages[i].Attachments = attachmentsMap[messages[i].ID]
+			}
+		}
+
+		// Загружаем реакции
+		reactions, err := r.GetMessageReactionsByMessageIDs(ctx, messageIDs)
+		if err == nil {
+			reactionsMap := make(map[uuid.UUID][]models.MessageReaction)
+			for _, react := range reactions {
+				reactionsMap[react.MessageID] = append(reactionsMap[react.MessageID], react)
+			}
+			for i := range messages {
+				messages[i].Reactions = reactionsMap[messages[i].ID]
+			}
+		}
+	}
+
 	return messages, nil
 }
 
@@ -704,12 +744,25 @@ func (r *OrderRepository) GetMessageByID(ctx context.Context, messageID uuid.UUI
 		}
 		return nil, fmt.Errorf("order repository: get message by id %w", err)
 	}
+
+	// Загружаем вложения
+	attachments, err := r.GetMessageAttachments(ctx, messageID)
+	if err == nil {
+		message.Attachments = attachments
+	}
+
+	// Загружаем реакции
+	reactions, err := r.GetMessageReactions(ctx, messageID)
+	if err == nil {
+		message.Reactions = reactions
+	}
+
 	return &message, nil
 }
 
 // UpdateMessage обновляет содержимое сообщения.
 func (r *OrderRepository) UpdateMessage(ctx context.Context, messageID uuid.UUID, newContent string) error {
-	result, err := r.db.ExecContext(ctx, `UPDATE messages SET content = $1 WHERE id = $2`, newContent, messageID)
+	result, err := r.db.ExecContext(ctx, `UPDATE messages SET content = $1, updated_at = NOW() WHERE id = $2`, newContent, messageID)
 	if err != nil {
 		return fmt.Errorf("order repository: update message %w", err)
 	}
@@ -1099,4 +1152,238 @@ func (r *OrderRepository) GetAverageResponseTimeHours(ctx context.Context, userI
 		return 0.0, fmt.Errorf("order repository: get average response time %w", err)
 	}
 	return avgHours, nil
+}
+
+// AddMessageAttachments добавляет вложения к сообщению.
+func (r *OrderRepository) AddMessageAttachments(ctx context.Context, messageID uuid.UUID, mediaIDs []uuid.UUID) error {
+	if len(mediaIDs) == 0 {
+		return nil
+	}
+
+	query := `INSERT INTO message_attachments (message_id, media_id) VALUES `
+	values := make([]interface{}, 0, len(mediaIDs)*2)
+	argIndex := 1
+
+	for i, mediaID := range mediaIDs {
+		if i > 0 {
+			query += ", "
+		}
+		query += fmt.Sprintf("($%d, $%d)", argIndex, argIndex+1)
+		values = append(values, messageID, mediaID)
+		argIndex += 2
+	}
+	query += " ON CONFLICT DO NOTHING"
+
+	_, err := r.db.ExecContext(ctx, query, values...)
+	if err != nil {
+		return fmt.Errorf("order repository: add message attachments %w", err)
+	}
+	return nil
+}
+
+// GetMessageAttachments возвращает вложения сообщения.
+func (r *OrderRepository) GetMessageAttachments(ctx context.Context, messageID uuid.UUID) ([]models.MessageAttachment, error) {
+	query := `
+		SELECT
+			ma.id,
+			ma.message_id,
+			ma.media_id,
+			ma.created_at,
+			mf.id,
+			mf.user_id,
+			mf.file_path,
+			mf.file_type,
+			mf.file_size,
+			mf.is_public,
+			mf.created_at
+		FROM message_attachments ma
+		JOIN media_files mf ON mf.id = ma.media_id
+		WHERE ma.message_id = $1
+		ORDER BY ma.created_at
+	`
+
+	rows, err := r.db.QueryxContext(ctx, query, messageID)
+	if err != nil {
+		return nil, fmt.Errorf("order repository: get message attachments %w", err)
+	}
+	defer rows.Close()
+
+	var attachments []models.MessageAttachment
+	for rows.Next() {
+		var attachment models.MessageAttachment
+		var media models.MediaFile
+		var mediaUserID *uuid.UUID
+
+		if err := rows.Scan(
+			&attachment.ID,
+			&attachment.MessageID,
+			&attachment.MediaID,
+			&attachment.CreatedAt,
+			&media.ID,
+			&mediaUserID,
+			&media.FilePath,
+			&media.FileType,
+			&media.FileSize,
+			&media.IsPublic,
+			&media.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("order repository: scan message attachment %w", err)
+		}
+
+		media.UserID = mediaUserID
+		attachment.Media = &media
+		attachments = append(attachments, attachment)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("order repository: message attachments rows %w", err)
+	}
+
+	return attachments, nil
+}
+
+// GetMessageAttachmentsByMessageIDs возвращает вложения для нескольких сообщений.
+func (r *OrderRepository) GetMessageAttachmentsByMessageIDs(ctx context.Context, messageIDs []uuid.UUID) ([]models.MessageAttachment, error) {
+	if len(messageIDs) == 0 {
+		return []models.MessageAttachment{}, nil
+	}
+
+	query := `
+		SELECT
+			ma.id,
+			ma.message_id,
+			ma.media_id,
+			ma.created_at,
+			mf.id,
+			mf.user_id,
+			mf.file_path,
+			mf.file_type,
+			mf.file_size,
+			mf.is_public,
+			mf.created_at
+		FROM message_attachments ma
+		JOIN media_files mf ON mf.id = ma.media_id
+		WHERE ma.message_id = ANY($1)
+		ORDER BY ma.message_id, ma.created_at
+	`
+
+	rows, err := r.db.QueryxContext(ctx, query, pq.Array(messageIDs))
+	if err != nil {
+		return nil, fmt.Errorf("order repository: get message attachments by ids %w", err)
+	}
+	defer rows.Close()
+
+	var attachments []models.MessageAttachment
+	for rows.Next() {
+		var attachment models.MessageAttachment
+		var media models.MediaFile
+		var mediaUserID *uuid.UUID
+
+		if err := rows.Scan(
+			&attachment.ID,
+			&attachment.MessageID,
+			&attachment.MediaID,
+			&attachment.CreatedAt,
+			&media.ID,
+			&mediaUserID,
+			&media.FilePath,
+			&media.FileType,
+			&media.FileSize,
+			&media.IsPublic,
+			&media.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("order repository: scan message attachment %w", err)
+		}
+
+		media.UserID = mediaUserID
+		attachment.Media = &media
+		attachments = append(attachments, attachment)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("order repository: message attachments rows %w", err)
+	}
+
+	return attachments, nil
+}
+
+// AddMessageReaction добавляет реакцию на сообщение.
+func (r *OrderRepository) AddMessageReaction(ctx context.Context, messageID, userID uuid.UUID, emoji string) (*models.MessageReaction, error) {
+	query := `
+		INSERT INTO message_reactions (message_id, user_id, emoji)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (message_id, user_id) 
+		DO UPDATE SET emoji = EXCLUDED.emoji, created_at = NOW()
+		RETURNING id, message_id, user_id, emoji, created_at
+	`
+
+	var reaction models.MessageReaction
+	if err := r.db.QueryRowxContext(ctx, query, messageID, userID, emoji).StructScan(&reaction); err != nil {
+		return nil, fmt.Errorf("order repository: add message reaction %w", err)
+	}
+
+	return &reaction, nil
+}
+
+// RemoveMessageReaction удаляет реакцию пользователя на сообщение.
+func (r *OrderRepository) RemoveMessageReaction(ctx context.Context, messageID, userID uuid.UUID) error {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2`, messageID, userID)
+	if err != nil {
+		return fmt.Errorf("order repository: remove message reaction %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("order repository: remove message reaction rows affected %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("order repository: reaction not found")
+	}
+
+	return nil
+}
+
+// GetMessageReactions возвращает реакции на сообщение.
+func (r *OrderRepository) GetMessageReactions(ctx context.Context, messageID uuid.UUID) ([]models.MessageReaction, error) {
+	query := `
+		SELECT * FROM message_reactions
+		WHERE message_id = $1
+		ORDER BY created_at
+	`
+
+	var reactions []models.MessageReaction
+	if err := r.db.SelectContext(ctx, &reactions, query, messageID); err != nil {
+		return nil, fmt.Errorf("order repository: get message reactions %w", err)
+	}
+
+	return reactions, nil
+}
+
+// GetMessageReactionsByMessageIDs возвращает реакции для нескольких сообщений.
+func (r *OrderRepository) GetMessageReactionsByMessageIDs(ctx context.Context, messageIDs []uuid.UUID) ([]models.MessageReaction, error) {
+	if len(messageIDs) == 0 {
+		return []models.MessageReaction{}, nil
+	}
+
+	query := `
+		SELECT * FROM message_reactions
+		WHERE message_id = ANY($1)
+		ORDER BY message_id, created_at
+	`
+
+	var reactions []models.MessageReaction
+	if err := r.db.SelectContext(ctx, &reactions, query, pq.Array(messageIDs)); err != nil {
+		return nil, fmt.Errorf("order repository: get message reactions by ids %w", err)
+	}
+
+	return reactions, nil
+}
+
+// SetOrderFreelancer устанавливает фрилансера и итоговую сумму для заказа.
+func (r *OrderRepository) SetOrderFreelancer(ctx context.Context, orderID, freelancerID uuid.UUID, finalAmount float64) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE orders SET freelancer_id = $2, final_amount = $3, updated_at = NOW() WHERE id = $1
+	`, orderID, freelancerID, finalAmount)
+	return err
 }

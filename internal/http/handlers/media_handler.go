@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/h2non/filetype"
 
+	"github.com/ignatzorin/freelance-backend/internal/http/handlers/common"
 	"github.com/ignatzorin/freelance-backend/internal/models"
 	"github.com/ignatzorin/freelance-backend/internal/repository"
 	"github.com/ignatzorin/freelance-backend/internal/storage"
@@ -50,7 +51,7 @@ func NewMediaHandler(repo *repository.MediaRepository, storage *storage.PhotoSto
 
 // UploadPhoto обрабатывает POST /media/photos.
 func (h *MediaHandler) UploadPhoto(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -153,7 +154,7 @@ func (h *MediaHandler) UploadPhoto(c *gin.Context) {
 
 // DeleteMedia обрабатывает DELETE /media/:id.
 func (h *MediaHandler) DeleteMedia(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return

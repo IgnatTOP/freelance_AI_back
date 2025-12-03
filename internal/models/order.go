@@ -10,10 +10,13 @@ import (
 type Order struct {
 	ID                              uuid.UUID  `db:"id" json:"id"`
 	ClientID                        uuid.UUID  `db:"client_id" json:"client_id"`
+	FreelancerID                    *uuid.UUID `db:"freelancer_id" json:"freelancer_id,omitempty"`
+	CategoryID                      *uuid.UUID `db:"category_id" json:"category_id,omitempty"`
 	Title                           string     `db:"title" json:"title"`
 	Description                     string     `db:"description" json:"description"`
 	BudgetMin                       *float64   `db:"budget_min" json:"budget_min,omitempty"`
 	BudgetMax                       *float64   `db:"budget_max" json:"budget_max,omitempty"`
+	FinalAmount                     *float64   `db:"final_amount" json:"final_amount,omitempty"`
 	Status                          string     `db:"status" json:"status"`
 	DeadlineAt                      *time.Time `db:"deadline_at" json:"deadline_at,omitempty"`
 	AISummary                       *string    `db:"ai_summary" json:"ai_summary,omitempty"`
@@ -24,6 +27,7 @@ type Order struct {
 	UpdatedAt                       time.Time  `db:"updated_at" json:"updated_at"`
 	Attachments                     []OrderAttachment `json:"attachments,omitempty"`
 	ProposalsCount                  *int       `db:"proposals_count" json:"proposals_count,omitempty"`
+	Category                        *Category  `json:"category,omitempty"`
 }
 
 // OrderRequirement хранит информацию о требуемых навыках.

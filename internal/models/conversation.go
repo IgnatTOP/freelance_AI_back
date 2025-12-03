@@ -23,8 +23,32 @@ type Message struct {
 	AuthorType     string     `db:"author_type" json:"author_type"`
 	AuthorID       *uuid.UUID `db:"author_id" json:"author_id,omitempty"`
 	Content        string     `db:"content" json:"content"`
+	ParentMessageID *uuid.UUID `db:"parent_message_id" json:"parent_message_id,omitempty"`
 	AIMetadata     json.RawMessage `db:"ai_metadata" json:"ai_metadata,omitempty"`
 	CreatedAt      time.Time  `db:"created_at" json:"created_at"`
+	UpdatedAt      *time.Time `db:"updated_at" json:"updated_at,omitempty"`
+	// Связанные данные (загружаются отдельно)
+	Attachments    []MessageAttachment `json:"attachments,omitempty"`
+	Reactions       []MessageReaction    `json:"reactions,omitempty"`
+	ParentMessage   *Message             `json:"parent_message,omitempty"`
+}
+
+// MessageAttachment описывает вложение к сообщению.
+type MessageAttachment struct {
+	ID        uuid.UUID  `db:"id" json:"id"`
+	MessageID uuid.UUID  `db:"message_id" json:"message_id"`
+	MediaID   uuid.UUID  `db:"media_id" json:"media_id"`
+	Media     *MediaFile `json:"media,omitempty"`
+	CreatedAt time.Time  `db:"created_at" json:"created_at"`
+}
+
+// MessageReaction описывает реакцию на сообщение.
+type MessageReaction struct {
+	ID        uuid.UUID `db:"id" json:"id"`
+	MessageID uuid.UUID `db:"message_id" json:"message_id"`
+	UserID    uuid.UUID `db:"user_id" json:"user_id"`
+	Emoji     string   `db:"emoji" json:"emoji"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }
 
 // Notification описывает событие, отправленное пользователю.

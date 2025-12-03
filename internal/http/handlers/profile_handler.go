@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/ignatzorin/freelance-backend/internal/http/handlers/common"
 	"github.com/ignatzorin/freelance-backend/internal/models"
 	"github.com/ignatzorin/freelance-backend/internal/repository"
 	"github.com/ignatzorin/freelance-backend/internal/validation"
@@ -26,7 +27,7 @@ func NewProfileHandler(users *repository.UserRepository, hub *ws.Hub) *ProfileHa
 
 // GetMe возвращает профиль текущего пользователя.
 func (h *ProfileHandler) GetMe(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -60,7 +61,7 @@ func (h *ProfileHandler) GetMe(c *gin.Context) {
 
 // UpdateMe обновляет профиль текущего пользователя.
 func (h *ProfileHandler) UpdateMe(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -75,6 +76,11 @@ func (h *ProfileHandler) UpdateMe(c *gin.Context) {
 		Location        *string  `json:"location"`
 		PhotoID         *string  `json:"photo_id"`
 		AISummary       *string  `json:"ai_summary"`
+		Phone           *string  `json:"phone"`
+		Telegram        *string  `json:"telegram"`
+		Website         *string  `json:"website"`
+		CompanyName     *string  `json:"company_name"`
+		INN             *string  `json:"inn"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -134,6 +140,11 @@ func (h *ProfileHandler) UpdateMe(c *gin.Context) {
 		Location:        req.Location,
 		PhotoID:         photoUUID,
 		AISummary:       req.AISummary,
+		Phone:           req.Phone,
+		Telegram:        req.Telegram,
+		Website:         req.Website,
+		CompanyName:     req.CompanyName,
+		INN:             req.INN,
 	}
 
 	// Валидация уровня опыта
@@ -232,7 +243,7 @@ func (h *ProfileHandler) GetUserProfile(c *gin.Context) {
 
 // UpdateRole обрабатывает PUT /users/me/role - изменение роли пользователя.
 func (h *ProfileHandler) UpdateRole(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return

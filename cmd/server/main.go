@@ -15,15 +15,19 @@ import (
 	"github.com/ignatzorin/freelance-backend/internal/db"
 	httpHandlers "github.com/ignatzorin/freelance-backend/internal/http/handlers"
 	httpRouter "github.com/ignatzorin/freelance-backend/internal/http/router"
+	"github.com/ignatzorin/freelance-backend/internal/infrastructure/persistence"
+	newHandler "github.com/ignatzorin/freelance-backend/internal/interface/http/handler"
 	"github.com/ignatzorin/freelance-backend/internal/logger"
 	"github.com/ignatzorin/freelance-backend/internal/repository"
 	"github.com/ignatzorin/freelance-backend/internal/service"
 	"github.com/ignatzorin/freelance-backend/internal/storage"
+	convUC "github.com/ignatzorin/freelance-backend/internal/usecase/conversation"
+	orderUC "github.com/ignatzorin/freelance-backend/internal/usecase/order"
+	proposalUC "github.com/ignatzorin/freelance-backend/internal/usecase/proposal"
 	"github.com/ignatzorin/freelance-backend/internal/ws"
 )
 
 func main() {
-	// Готовим контекст для graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -32,7 +36,6 @@ func main() {
 		log.Fatalf("main: ошибка загрузки конфигурации: %v", err)
 	}
 
-	// Инициализация логгера
 	logLevel := "info"
 	if cfg.Env == "development" {
 		logLevel = "debug"
@@ -42,7 +45,6 @@ func main() {
 		logger.Init(logLevel)
 	}
 
-	// Подключение к базе и миграции.
 	dbConn, err := db.NewPostgres(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("main: ошибка подключения к базе: %v", err)
@@ -53,64 +55,169 @@ func main() {
 		log.Fatalf("main: ошибка миграций: %v", err)
 	}
 
-	// Инициализируем вспомогательные сервисы.
 	tokenManager := service.NewTokenManager(cfg.JWTSecret, cfg.RefreshSecret, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
+	cacheService := service.NewCacheService()
 
 	photoStorage, err := storage.NewPhotoStorage(cfg.MediaStoragePath, cfg.MaxUploadSizeMB)
 	if err != nil {
 		log.Fatalf("main: не удалось подготовить файловое хранилище: %v", err)
 	}
 
-	// Репозитории.
+	// === СТАРЫЕ РЕПОЗИТОРИИ (для совместимости) ===
 	userRepo := repository.NewUserRepository(dbConn)
 	orderRepo := repository.NewOrderRepository(dbConn)
 	mediaRepo := repository.NewMediaRepository(dbConn)
 	notificationRepo := repository.NewNotificationRepository(dbConn)
 	portfolioRepo := repository.NewPortfolioRepository(dbConn)
+	paymentRepo := repository.NewPaymentRepository(dbConn)
+	reviewRepo := repository.NewReviewRepository(dbConn)
+	catalogRepo := repository.NewCatalogRepository(dbConn)
+	// Новые репозитории
+	withdrawalRepo := repository.NewWithdrawalRepository(dbConn)
+	favoriteRepo := repository.NewFavoriteRepository(dbConn)
+	reportRepo := repository.NewReportRepository(dbConn)
+	disputeRepo := repository.NewDisputeRepository(dbConn)
+	verificationRepo := repository.NewVerificationRepository(dbConn)
+	proposalTemplateRepo := repository.NewProposalTemplateRepository(dbConn)
 
-	// Сервисы.
+	// === НОВЫЕ РЕПОЗИТОРИИ (Clean Architecture) ===
+	newOrderRepo := persistence.NewOrderRepositoryAdapter(dbConn)
+	newProposalRepo := persistence.NewProposalRepositoryAdapter(dbConn)
+	newConvRepo := persistence.NewConversationRepositoryAdapter(dbConn)
+	newMsgRepo := persistence.NewMessageRepositoryAdapter(dbConn)
+
+	// === USE CASES ===
+	// Order
+	createOrderUC := orderUC.NewCreateOrderUseCase(newOrderRepo)
+	updateOrderUC := orderUC.NewUpdateOrderUseCase(newOrderRepo)
+	getOrderUC := orderUC.NewGetOrderUseCase(newOrderRepo)
+	listOrdersUC := orderUC.NewListOrdersUseCase(newOrderRepo)
+	deleteOrderUC := orderUC.NewDeleteOrderUseCase(newOrderRepo)
+
+	// Proposal
+	createProposalUC := proposalUC.NewCreateProposalUseCase(newProposalRepo, newOrderRepo)
+	updateProposalStatusUC := proposalUC.NewUpdateProposalStatusUseCase(newProposalRepo, newOrderRepo)
+	getProposalUC := proposalUC.NewGetProposalUseCase(newProposalRepo)
+	listProposalsUC := proposalUC.NewListProposalsUseCase(newProposalRepo)
+	listMyProposalsUC := proposalUC.NewListMyProposalsUseCase(newProposalRepo)
+	getMyProposalForOrderUC := proposalUC.NewGetMyProposalForOrderUseCase(newProposalRepo)
+
+	// Conversation
+	getOrCreateConvUC := convUC.NewGetOrCreateConversationUseCase(newConvRepo, newOrderRepo)
+	listMyConvsUC := convUC.NewListMyConversationsUseCase(newConvRepo)
+	sendMessageUC := convUC.NewSendMessageUseCase(newConvRepo, newMsgRepo)
+	listMessagesUC := convUC.NewListMessagesUseCase(newConvRepo, newMsgRepo)
+	updateMessageUC := convUC.NewUpdateMessageUseCase(newMsgRepo)
+	deleteMessageUC := convUC.NewDeleteMessageUseCase(newMsgRepo)
+	addReactionUC := convUC.NewAddReactionUseCase(newMsgRepo)
+	removeReactionUC := convUC.NewRemoveReactionUseCase(newMsgRepo)
+
+	// === НОВЫЕ HANDLERS ===
+	newOrderHandler := newHandler.NewOrderHandler(createOrderUC, updateOrderUC, getOrderUC, listOrdersUC, deleteOrderUC)
+	newProposalHandler := newHandler.NewProposalHandler(createProposalUC, updateProposalStatusUC, getProposalUC, listProposalsUC, listMyProposalsUC, getMyProposalForOrderUC)
+	newConvHandler := newHandler.NewConversationHandler(getOrCreateConvUC, listMyConvsUC, sendMessageUC, listMessagesUC, updateMessageUC, deleteMessageUC, addReactionUC, removeReactionUC)
+
+	// === СТАРЫЕ СЕРВИСЫ (для совместимости) ===
 	authService := service.NewAuthService(userRepo, tokenManager)
 	notificationService := service.NewNotificationService(notificationRepo)
 	portfolioService := service.NewPortfolioService(portfolioRepo)
 	seedService := service.NewSeedService(userRepo, orderRepo)
-	
+	extendedSeedService := service.NewExtendedSeedService(userRepo, orderRepo, paymentRepo, reviewRepo, favoriteRepo, proposalTemplateRepo)
+	paymentService := service.NewPaymentService(paymentRepo)
+	reviewService := service.NewReviewService(reviewRepo, orderRepo)
+	// Новые сервисы
+	withdrawalService := service.NewWithdrawalService(withdrawalRepo)
+	favoriteService := service.NewFavoriteService(favoriteRepo)
+	reportService := service.NewReportService(reportRepo)
+	disputeService := service.NewDisputeService(disputeRepo, paymentRepo)
+	verificationService := service.NewVerificationService(verificationRepo)
+	proposalTemplateService := service.NewProposalTemplateService(proposalTemplateRepo)
+
 	var orderService *service.OrderService
 	if cfg.AIBaseURL != "" && cfg.AIModel != "" {
 		orderService = service.NewOrderService(orderRepo, userRepo, portfolioRepo, userRepo, ai.NewClient(cfg.AIBaseURL, cfg.AIModel))
 	} else {
 		orderService = service.NewOrderService(orderRepo, userRepo, portfolioRepo, userRepo, nil)
 	}
+	orderService.SetPaymentRepository(paymentRepo)
 
-	// Вебсокеты.
 	hub := ws.NewHub(ctx)
 	hub.SetNotificationSaver(ws.NewNotificationServiceAdapter(notificationService))
 	go hub.Run()
-	
-	// Устанавливаем hub для отправки уведомлений о готовности AI анализа
+
 	orderService.SetHub(hub)
 
-	// HTTP хэндлеры.
+	// === СТАРЫЕ HANDLERS (для совместимости) ===
 	authHandler := httpHandlers.NewAuthHandler(authService)
 	profileHandler := httpHandlers.NewProfileHandler(userRepo, hub)
-	orderHandler := httpHandlers.NewOrderHandler(orderService, userRepo, mediaRepo, hub)
+	orderHandler := httpHandlers.NewOrderHandler(orderService, userRepo, mediaRepo, hub, cacheService)
+	conversationHandler := httpHandlers.NewConversationHandler(orderService, userRepo, mediaRepo, hub)
+	proposalOperationsHandler := httpHandlers.NewProposalOperationsHandler(orderService, userRepo, mediaRepo, hub)
+	aiOrderHandler := httpHandlers.NewAIOrderHandler(orderService, userRepo, mediaRepo, hub)
 	mediaHandler := httpHandlers.NewMediaHandler(mediaRepo, photoStorage)
 	wsHandler := httpHandlers.NewWSHandler(hub, tokenManager)
 	statsHandler := httpHandlers.NewStatsHandler(orderRepo, userRepo)
+	dashboardHandler := httpHandlers.NewDashboardHandler(orderRepo, userRepo, notificationRepo, orderService, cacheService)
 	proposalHandler := httpHandlers.NewProposalHandler(orderRepo)
 	notificationHandler := httpHandlers.NewNotificationHandler(notificationService)
 	portfolioHandler := httpHandlers.NewPortfolioHandler(portfolioService)
 	healthHandler := httpHandlers.NewHealthHandler(dbConn)
-	seedHandler := httpHandlers.NewSeedHandler(seedService)
+	seedHandler := httpHandlers.NewSeedHandler(seedService, extendedSeedService)
+	paymentHandler := httpHandlers.NewPaymentHandler(paymentService)
+	reviewHandler := httpHandlers.NewReviewHandler(reviewService)
+	catalogHandler := httpHandlers.NewCatalogHandler(catalogRepo)
+	// Новые handlers
+	withdrawalHandler := httpHandlers.NewWithdrawalHandler(withdrawalService)
+	favoriteHandler := httpHandlers.NewFavoriteHandler(favoriteService)
+	reportHandler := httpHandlers.NewReportHandler(reportService)
+	disputeHandler := httpHandlers.NewDisputeHandler(disputeService)
+	verificationHandler := httpHandlers.NewVerificationHandler(verificationService)
+	proposalTemplateHandler := httpHandlers.NewProposalTemplateHandler(proposalTemplateService)
+	freelancerHandler := httpHandlers.NewFreelancerHandler(userRepo)
 
-	// Роутер.
-	engine := httpRouter.SetupRouter(cfg, authHandler, profileHandler, orderHandler, mediaHandler, wsHandler, statsHandler, proposalHandler, notificationHandler, portfolioHandler, healthHandler, seedHandler, tokenManager)
+	// Роутер с новыми и старыми handlers
+	engine := httpRouter.SetupRouter(
+		cfg,
+		authHandler,
+		profileHandler,
+		orderHandler,
+		conversationHandler,
+		proposalOperationsHandler,
+		aiOrderHandler,
+		mediaHandler,
+		wsHandler,
+		statsHandler,
+		dashboardHandler,
+		proposalHandler,
+		notificationHandler,
+		portfolioHandler,
+		healthHandler,
+		seedHandler,
+		tokenManager,
+		// Новые handlers
+		newOrderHandler,
+		newProposalHandler,
+		newConvHandler,
+		// Платежи и отзывы
+		paymentHandler,
+		reviewHandler,
+		// Каталог
+		catalogHandler,
+		// Дополнительные фичи
+		withdrawalHandler,
+		favoriteHandler,
+		reportHandler,
+		disputeHandler,
+		verificationHandler,
+		proposalTemplateHandler,
+		freelancerHandler,
+	)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.HTTPPort,
 		Handler: engine,
 	}
 
-	// Завершаем сервер при получении сигнала.
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -127,7 +234,6 @@ func main() {
 	}
 }
 
-// safeClose закрывает соединение с базой.
 func safeClose(db *sqlx.DB) {
 	if err := db.Close(); err != nil {
 		log.Printf("main: ошибка закрытия базы: %v", err)

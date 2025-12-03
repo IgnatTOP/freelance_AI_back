@@ -26,33 +26,57 @@ func NewSeedService(userRepo *repository.UserRepository, orderRepo *repository.O
 	}
 }
 
+// SeedAccountInfo содержит информацию об аккаунте для возврата.
+type SeedAccountInfo struct {
+	Email    string `json:"email"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Role     string `json:"role"`
+}
+
+// SeedDataResult содержит результат генерации данных.
+type SeedDataResult struct {
+	Accounts []SeedAccountInfo `json:"accounts"`
+}
+
 // SeedData генерирует фейковые профили и заказы.
-func (s *SeedService) SeedData(ctx context.Context, numUsers int, numOrders int) error {
+func (s *SeedService) SeedData(ctx context.Context, numUsers int, numOrders int) (*SeedDataResult, error) {
 	rand.Seed(time.Now().UnixNano())
 
 	// Генерируем пользователей
 	users, err := s.generateUsers(ctx, numUsers)
 	if err != nil {
-		return fmt.Errorf("seed service: failed to generate users: %w", err)
+		return nil, fmt.Errorf("seed service: failed to generate users: %w", err)
 	}
 
-	// Разделяем на клиентов и фрилансеров
+	// Создаём список аккаунтов для возврата
+	accounts := make([]SeedAccountInfo, 0, len(users))
+	const defaultPassword = "Password123"
+	for _, user := range users {
+		accounts = append(accounts, SeedAccountInfo{
+			Email:    user.Email,
+			Username: user.Username,
+			Password: defaultPassword,
+			Role:     user.Role,
+		})
+	}
+
+	// Собираем клиентов для создания заказов
 	var clients []*models.User
-	var freelancers []*models.User
 	for _, user := range users {
 		if user.Role == "client" {
 			clients = append(clients, user)
-		} else {
-			freelancers = append(freelancers, user)
 		}
 	}
 
 	// Генерируем заказы
 	if err := s.generateOrders(ctx, clients, numOrders); err != nil {
-		return fmt.Errorf("seed service: failed to generate orders: %w", err)
+		return nil, fmt.Errorf("seed service: failed to generate orders: %w", err)
 	}
 
-	return nil
+	return &SeedDataResult{
+		Accounts: accounts,
+	}, nil
 }
 
 // generateUsers создаёт фейковых пользователей с профилями.

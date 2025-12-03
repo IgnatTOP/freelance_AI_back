@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/ignatzorin/freelance-backend/internal/http/handlers/common"
 	"github.com/ignatzorin/freelance-backend/internal/service"
 	"github.com/ignatzorin/freelance-backend/internal/validation"
 )
@@ -166,7 +167,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 
 // ListSessions обрабатывает GET /auth/sessions - список активных сессий.
 func (h *AuthHandler) ListSessions(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -183,7 +184,7 @@ func (h *AuthHandler) ListSessions(c *gin.Context) {
 
 // DeleteSession обрабатывает DELETE /auth/sessions/:id - удаление конкретной сессии.
 func (h *AuthHandler) DeleteSession(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -205,7 +206,7 @@ func (h *AuthHandler) DeleteSession(c *gin.Context) {
 
 // DeleteAllSessionsExcept обрабатывает DELETE /auth/sessions - удаление всех сессий кроме текущей.
 func (h *AuthHandler) DeleteAllSessionsExcept(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return

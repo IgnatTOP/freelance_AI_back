@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/ignatzorin/freelance-backend/internal/http/handlers/common"
 	"github.com/ignatzorin/freelance-backend/internal/repository"
 	"github.com/ignatzorin/freelance-backend/internal/service"
 )
@@ -23,14 +24,14 @@ func NewNotificationHandler(notifications *service.NotificationService) *Notific
 
 // ListNotifications обрабатывает GET /notifications.
 func (h *NotificationHandler) ListNotifications(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
 
-	limit := parseIntQuery(c, "limit", 20)
-	offset := parseIntQuery(c, "offset", 0)
+	limit := common.ParseIntQuery(c, "limit", 20)
+	offset := common.ParseIntQuery(c, "offset", 0)
 	unreadOnly := c.Query("unread_only") == "true"
 
 	notifications, err := h.notifications.ListNotifications(c.Request.Context(), userID, limit, offset, unreadOnly)
@@ -44,7 +45,7 @@ func (h *NotificationHandler) ListNotifications(c *gin.Context) {
 
 // GetNotification обрабатывает GET /notifications/:id.
 func (h *NotificationHandler) GetNotification(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -76,7 +77,7 @@ func (h *NotificationHandler) GetNotification(c *gin.Context) {
 
 // MarkAsRead обрабатывает PUT /notifications/:id/read.
 func (h *NotificationHandler) MarkAsRead(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -102,7 +103,7 @@ func (h *NotificationHandler) MarkAsRead(c *gin.Context) {
 
 // MarkAllAsRead обрабатывает PUT /notifications/read-all.
 func (h *NotificationHandler) MarkAllAsRead(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -118,7 +119,7 @@ func (h *NotificationHandler) MarkAllAsRead(c *gin.Context) {
 
 // DeleteNotification обрабатывает DELETE /notifications/:id.
 func (h *NotificationHandler) DeleteNotification(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -144,7 +145,7 @@ func (h *NotificationHandler) DeleteNotification(c *gin.Context) {
 
 // CountUnread обрабатывает GET /notifications/unread/count.
 func (h *NotificationHandler) CountUnread(c *gin.Context) {
-	userID, err := currentUserID(c)
+	userID, err := common.CurrentUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return

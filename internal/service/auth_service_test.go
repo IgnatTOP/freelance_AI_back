@@ -34,6 +34,7 @@ func (m *mockAuthRepository) Create(ctx context.Context, user *models.User) erro
 	now := time.Now()
 	user.CreatedAt = now
 	user.UpdatedAt = now
+	user.IsActive = true
 	m.usersByEmail[user.Email] = user
 	m.usersByID[user.ID] = user
 	return nil
@@ -74,6 +75,43 @@ func (m *mockAuthRepository) CreateSession(ctx context.Context, session *models.
 
 func (m *mockAuthRepository) DeleteSession(ctx context.Context, refreshToken string) error {
 	delete(m.sessions, refreshToken)
+	return nil
+}
+
+func (m *mockAuthRepository) ListSessions(ctx context.Context, userID uuid.UUID) ([]models.Session, error) {
+	var sessions []models.Session
+	for _, s := range m.sessions {
+		if s.UserID == userID {
+			sessions = append(sessions, *s)
+		}
+	}
+	return sessions, nil
+}
+
+func (m *mockAuthRepository) DeleteSessionByID(ctx context.Context, sessionID uuid.UUID, userID uuid.UUID) error {
+	for token, s := range m.sessions {
+		if s.ID == sessionID && s.UserID == userID {
+			delete(m.sessions, token)
+			return nil
+		}
+	}
+	return nil
+}
+
+func (m *mockAuthRepository) DeleteAllSessionsExcept(ctx context.Context, userID uuid.UUID, exceptRefreshToken string) error {
+	for token, s := range m.sessions {
+		if s.UserID == userID && token != exceptRefreshToken {
+			delete(m.sessions, token)
+		}
+	}
+	return nil
+}
+
+func (m *mockAuthRepository) UpdateLastLoginAt(ctx context.Context, userID uuid.UUID) error {
+	if user, ok := m.usersByID[userID]; ok {
+		now := time.Now()
+		user.LastLoginAt = &now
+	}
 	return nil
 }
 

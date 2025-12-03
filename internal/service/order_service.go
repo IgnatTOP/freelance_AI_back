@@ -42,6 +42,11 @@ type OrderRepository interface {
 	GetMessageByID(ctx context.Context, messageID uuid.UUID) (*models.Message, error)
 	UpdateMessage(ctx context.Context, messageID uuid.UUID, newContent string) error
 	DeleteMessage(ctx context.Context, messageID uuid.UUID) error
+	AddMessageAttachments(ctx context.Context, messageID uuid.UUID, mediaIDs []uuid.UUID) error
+	GetMessageAttachments(ctx context.Context, messageID uuid.UUID) ([]models.MessageAttachment, error)
+	AddMessageReaction(ctx context.Context, messageID, userID uuid.UUID, emoji string) (*models.MessageReaction, error)
+	RemoveMessageReaction(ctx context.Context, messageID, userID uuid.UUID) error
+	GetMessageReactions(ctx context.Context, messageID uuid.UUID) ([]models.MessageReaction, error)
 	UpdateAISummary(ctx context.Context, orderID uuid.UUID, clientID uuid.UUID, summary string) error
 	UpdateProposalAIFeedback(ctx context.Context, proposalID uuid.UUID, feedback string) error
 	UpdateBestRecommendation(ctx context.Context, orderID uuid.UUID, proposalID *uuid.UUID, justification string) error
@@ -112,6 +117,15 @@ type WSNotifier interface {
 	BroadcastToUser(userID uuid.UUID, event string, data interface{}) error
 }
 
+// PaymentRepositoryForOrders описывает контракт для работы с платежами в заказах.
+type PaymentRepositoryForOrders interface {
+	GetBalance(ctx context.Context, userID uuid.UUID) (*models.UserBalance, error)
+	CreateEscrow(ctx context.Context, orderID, clientID, freelancerID uuid.UUID, amount float64) (*models.Escrow, error)
+	ReleaseEscrow(ctx context.Context, orderID uuid.UUID) (*models.Escrow, error)
+	RefundEscrow(ctx context.Context, orderID uuid.UUID) (*models.Escrow, error)
+	GetEscrowByOrderID(ctx context.Context, orderID uuid.UUID) (*models.Escrow, error)
+}
+
 // OrderService содержит бизнес-логику работы с заказами.
 type OrderService struct {
 	repo      OrderRepository
@@ -120,6 +134,7 @@ type OrderService struct {
 	users     UserRepositoryForAI
 	ai        AIHelper
 	hub       WSNotifier
+	payment   PaymentRepositoryForOrders
 }
 
 // NewOrderService создаёт новый сервис заказов.
@@ -131,6 +146,11 @@ func NewOrderService(repo OrderRepository, profile ProfileRepository, portfolio 
 		users:     users,
 		ai:        ai,
 	}
+}
+
+// SetPaymentRepository устанавливает репозиторий платежей.
+func (s *OrderService) SetPaymentRepository(payment PaymentRepositoryForOrders) {
+	s.payment = payment
 }
 
 // SetHub устанавливает WebSocket hub для отправки уведомлений.
@@ -276,6 +296,33 @@ func (s *OrderService) UpdateOrder(ctx context.Context, in UpdateOrderInput) (*m
 		existing.Status = in.Status
 	}
 	existing.DeadlineAt = in.DeadlineAt
+
+	// Обработка escrow при изменении статуса
+	if in.Status != "" && s.payment != nil {
+		if in.Status == models.OrderStatusCompleted {
+			// Освобождаем средства в пользу фрилансера
+			if _, err := s.payment.ReleaseEscrow(ctx, existing.ID); err != nil {
+				// Логируем ошибку, но не блокируем завершение заказа если escrow не найден
+				if logger.Log != nil {
+					logger.Log.WithFields(map[string]interface{}{
+						"order_id": existing.ID,
+						"error":    err.Error(),
+					}).Warn("order service: не удалось освободить escrow")
+				}
+			}
+		} else if in.Status == models.OrderStatusCancelled {
+			// Возвращаем средства заказчику
+			if _, err := s.payment.RefundEscrow(ctx, existing.ID); err != nil {
+				// Логируем ошибку, но не блокируем отмену заказа если escrow не найден
+				if logger.Log != nil {
+					logger.Log.WithFields(map[string]interface{}{
+						"order_id": existing.ID,
+						"error":    err.Error(),
+					}).Warn("order service: не удалось вернуть escrow")
+				}
+			}
+		}
+	}
 
 	if s.ai != nil && needsResummary {
 		if summary, err := s.ai.SummarizeOrder(ctx, existing.Title, existing.Description); err == nil {
@@ -637,6 +684,40 @@ func (s *OrderService) UpdateProposalStatus(ctx context.Context, actorID uuid.UU
 		return nil, nil, fmt.Errorf("order service: нельзя изменить статус предложения для завершённого или отменённого заказа")
 	}
 
+	// При принятии предложения проверяем баланс и создаём escrow
+	if status == models.ProposalStatusAccepted {
+		if s.payment == nil {
+			return nil, nil, fmt.Errorf("order service: платёжная система недоступна")
+		}
+
+		// Определяем сумму для резервирования
+		var escrowAmount float64
+		if proposal.ProposedAmount != nil && *proposal.ProposedAmount > 0 {
+			escrowAmount = *proposal.ProposedAmount
+		} else if order.BudgetMax != nil && *order.BudgetMax > 0 {
+			escrowAmount = *order.BudgetMax
+		} else if order.BudgetMin != nil && *order.BudgetMin > 0 {
+			escrowAmount = *order.BudgetMin
+		} else {
+			return nil, nil, fmt.Errorf("order service: не указана сумма заказа")
+		}
+
+		// Проверяем баланс заказчика
+		balance, err := s.payment.GetBalance(ctx, order.ClientID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("order service: не удалось получить баланс: %w", err)
+		}
+		if balance.Available < escrowAmount {
+			return nil, nil, fmt.Errorf("order service: недостаточно средств на балансе (доступно: %.2f, требуется: %.2f)", balance.Available, escrowAmount)
+		}
+
+		// Создаём escrow (резервируем средства)
+		_, err = s.payment.CreateEscrow(ctx, order.ID, order.ClientID, proposal.FreelancerID, escrowAmount)
+		if err != nil {
+			return nil, nil, fmt.Errorf("order service: не удалось зарезервировать средства: %w", err)
+		}
+	}
+
 	updatedProposal, err := s.repo.UpdateProposalStatus(ctx, proposalID, status)
 	if err != nil {
 		return nil, nil, err
@@ -645,9 +726,10 @@ func (s *OrderService) UpdateProposalStatus(ctx context.Context, actorID uuid.UU
 	var conversation *models.Conversation
 
 	if status == models.ProposalStatusAccepted {
-		// Автоматически меняем статус заказа на in_progress
+		// Автоматически меняем статус заказа на in_progress и назначаем фрилансера
 		if order.Status == models.OrderStatusPublished {
 			order.Status = models.OrderStatusInProgress
+			order.FreelancerID = &proposal.FreelancerID
 			// Обновляем заказ без изменения других полей
 			err = s.repo.Update(ctx, order, []models.OrderRequirement{}, []uuid.UUID{})
 			if err != nil {
@@ -767,10 +849,10 @@ func (s *OrderService) ListMessages(ctx context.Context, conversationID uuid.UUI
 }
 
 // SendMessage добавляет сообщение в чат.
-func (s *OrderService) SendMessage(ctx context.Context, conversationID, authorID uuid.UUID, content string) (*models.Message, *models.Conversation, error) {
+func (s *OrderService) SendMessage(ctx context.Context, conversationID, authorID uuid.UUID, content string, parentMessageID *uuid.UUID, attachmentMediaIDs []uuid.UUID) (*models.Message, *models.Conversation, error) {
 	// Валидация входных данных
-	if content == "" {
-		return nil, nil, fmt.Errorf("order service: текст сообщения не может быть пустым")
+	if content == "" && len(attachmentMediaIDs) == 0 {
+		return nil, nil, fmt.Errorf("order service: сообщение должно содержать текст или вложения")
 	}
 	if len(content) > 5000 {
 		return nil, nil, fmt.Errorf("order service: сообщение слишком длинное (максимум 5000 символов)")
@@ -791,16 +873,40 @@ func (s *OrderService) SendMessage(ctx context.Context, conversationID, authorID
 		return nil, nil, fmt.Errorf("order service: у вас нет доступа к этому чату")
 	}
 
+	// Проверяем, что parent_message_id существует и принадлежит этому чату
+	if parentMessageID != nil {
+		parentMessage, err := s.repo.GetMessageByID(ctx, *parentMessageID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("order service: родительское сообщение не найдено")
+		}
+		if parentMessage.ConversationID != conversationID {
+			return nil, nil, fmt.Errorf("order service: родительское сообщение не принадлежит этому чату")
+		}
+	}
+
 	message := &models.Message{
-		ConversationID: conversationID,
-		AuthorType:     authorType,
-		AuthorID:       &authorID,
-		Content:        content,
-		AIMetadata:     json.RawMessage("null"),
+		ConversationID:  conversationID,
+		AuthorType:      authorType,
+		AuthorID:        &authorID,
+		Content:         content,
+		ParentMessageID: parentMessageID,
+		AIMetadata:      json.RawMessage("null"),
 	}
 
 	if err := s.repo.AddMessage(ctx, message); err != nil {
 		return nil, nil, err
+	}
+
+	// Добавляем вложения, если они есть
+	if len(attachmentMediaIDs) > 0 {
+		if err := s.repo.AddMessageAttachments(ctx, message.ID, attachmentMediaIDs); err != nil {
+			return nil, nil, fmt.Errorf("order service: не удалось добавить вложения: %w", err)
+		}
+		// Загружаем вложения для ответа
+		attachments, err := s.repo.GetMessageAttachments(ctx, message.ID)
+		if err == nil {
+			message.Attachments = attachments
+		}
 	}
 
 	return message, conversation, nil
@@ -862,6 +968,53 @@ func (s *OrderService) DeleteMessage(ctx context.Context, messageID uuid.UUID, a
 	}
 
 	return s.repo.DeleteMessage(ctx, messageID)
+}
+
+// AddMessageReaction добавляет реакцию на сообщение.
+func (s *OrderService) AddMessageReaction(ctx context.Context, messageID, userID uuid.UUID, emoji string) (*models.MessageReaction, error) {
+	// Валидация emoji (базовая проверка)
+	if emoji == "" || len(emoji) > 10 {
+		return nil, fmt.Errorf("order service: некорректная реакция")
+	}
+
+	// Проверяем, что сообщение существует
+	message, err := s.repo.GetMessageByID(ctx, messageID)
+	if err != nil {
+		return nil, fmt.Errorf("order service: сообщение не найдено")
+	}
+
+	// Проверяем доступ к чату
+	conversation, err := s.repo.GetConversationByID(ctx, message.ConversationID)
+	if err != nil {
+		return nil, fmt.Errorf("order service: чат не найден")
+	}
+
+	if conversation.ClientID != userID && conversation.FreelancerID != userID {
+		return nil, fmt.Errorf("order service: у вас нет доступа к этому чату")
+	}
+
+	return s.repo.AddMessageReaction(ctx, messageID, userID, emoji)
+}
+
+// RemoveMessageReaction удаляет реакцию пользователя на сообщение.
+func (s *OrderService) RemoveMessageReaction(ctx context.Context, messageID, userID uuid.UUID) error {
+	// Проверяем, что сообщение существует
+	message, err := s.repo.GetMessageByID(ctx, messageID)
+	if err != nil {
+		return fmt.Errorf("order service: сообщение не найдено")
+	}
+
+	// Проверяем доступ к чату
+	conversation, err := s.repo.GetConversationByID(ctx, message.ConversationID)
+	if err != nil {
+		return fmt.Errorf("order service: чат не найден")
+	}
+
+	if conversation.ClientID != userID && conversation.FreelancerID != userID {
+		return fmt.Errorf("order service: у вас нет доступа к этому чату")
+	}
+
+	return s.repo.RemoveMessageReaction(ctx, messageID, userID)
 }
 
 // DeleteOrder удаляет заказ.
@@ -1333,7 +1486,8 @@ func (s *OrderService) RecommendRelevantOrders(ctx context.Context, freelancerID
 	}
 
 	if len(result.Orders) == 0 {
-		return []models.RecommendedOrder{}, "Нет доступных заказов", nil
+		// Fallback: возвращаем пустой список с объяснением
+		return []models.RecommendedOrder{}, "Нет доступных заказов на платформе", nil
 	}
 
 	// Получаем список заказов, на которые фрилансер уже откликнулся
@@ -1364,11 +1518,221 @@ func (s *OrderService) RecommendRelevantOrders(ctx context.Context, freelancerID
 	}
 
 	if len(filteredOrders) == 0 {
+		// Fallback: если все заказы уже просмотрены, возвращаем популярные заказы
+		// Берем топ заказов по количеству откликов
+		fallbackParams := repository.ListFilterParams{
+			Status:    models.OrderStatusPublished,
+			Limit:     limit,
+			Offset:    0,
+			SortBy:    "proposals",
+			SortOrder: "desc",
+		}
+		fallbackResult, err := s.repo.List(ctx, fallbackParams)
+		if err == nil && len(fallbackResult.Orders) > 0 {
+			fallbackOrders := make([]models.RecommendedOrder, 0, len(fallbackResult.Orders))
+			for _, order := range fallbackResult.Orders {
+				// Пропускаем заказы, на которые уже откликнулся
+				if alreadyRespondedOrders[order.ID] {
+					continue
+				}
+				// Базовый match_score на основе популярности
+				matchScore := 6.5 // Базовый score для популярных заказов
+				if order.ProposalsCount != nil && *order.ProposalsCount > 0 {
+					// Чем больше откликов, тем выше score (но не выше 7.5)
+					matchScore = 6.5 + float64(*order.ProposalsCount)*0.1
+					if matchScore > 7.5 {
+						matchScore = 7.5
+					}
+				}
+				fallbackOrders = append(fallbackOrders, models.RecommendedOrder{
+					OrderID:     order.ID,
+					MatchScore:  matchScore,
+					Explanation: "Популярный заказ на платформе",
+				})
+				if len(fallbackOrders) >= limit {
+					break
+				}
+			}
+			if len(fallbackOrders) > 0 {
+				return fallbackOrders, "Популярные заказы на платформе", nil
+			}
+		}
 		return []models.RecommendedOrder{}, "Нет новых заказов для рекомендации", nil
 	}
 
 	// Передаем отфильтрованные заказы в AI для анализа
-	return s.ai.RecommendRelevantOrders(ctx, profile, aiPortfolio, filteredOrders)
+	recommendedOrders, explanation, err := s.ai.RecommendRelevantOrders(ctx, profile, aiPortfolio, filteredOrders)
+
+	// Fallback: если AI не вернул рекомендаций или вернул мало, добавляем популярные заказы
+	if err != nil || len(recommendedOrders) < limit {
+		// Если AI вернул рекомендации, используем их
+		if len(recommendedOrders) > 0 {
+			// Дополняем до limit популярными заказами
+			recommendedOrderIDs := make(map[uuid.UUID]bool)
+			for _, rec := range recommendedOrders {
+				recommendedOrderIDs[rec.OrderID] = true
+			}
+
+			// Ищем дополнительные заказы по навыкам или популярности
+			fallbackParams := repository.ListFilterParams{
+				Status:    models.OrderStatusPublished,
+				Limit:     limit * 2,
+				Offset:    0,
+				SortBy:    "proposals",
+				SortOrder: "desc",
+			}
+
+			// Если у фрилансера есть навыки, ищем заказы по навыкам
+			if len(profile.Skills) > 0 {
+				fallbackParams.Skills = profile.Skills
+			}
+
+			fallbackResult, err := s.repo.List(ctx, fallbackParams)
+			if err == nil && len(fallbackResult.Orders) > 0 {
+				for _, order := range fallbackResult.Orders {
+					// Пропускаем уже рекомендованные
+					if recommendedOrderIDs[order.ID] {
+						continue
+					}
+					// Пропускаем заказы, на которые уже откликнулся
+					if alreadyRespondedOrders[order.ID] {
+						continue
+					}
+					// Пропускаем заказы, где уже выбран исполнитель
+					if order.Status == models.OrderStatusInProgress || order.Status == models.OrderStatusCompleted {
+						continue
+					}
+
+					// Базовый match_score
+					matchScore := 6.0
+					explanationText := "Заказ на основе ваших навыков"
+
+					// Проверяем соответствие навыков - получаем требования отдельно
+					if len(profile.Skills) > 0 {
+						requirements, err := s.repo.ListRequirements(ctx, order.ID)
+						if err == nil && len(requirements) > 0 {
+							orderSkills := make(map[string]bool)
+							for _, req := range requirements {
+								orderSkills[req.Skill] = true
+							}
+							matchingSkills := 0
+							for _, skill := range profile.Skills {
+								if orderSkills[skill] {
+									matchingSkills++
+								}
+							}
+							if matchingSkills > 0 {
+								matchScore = 6.5 + float64(matchingSkills)*0.3
+								if matchScore > 7.0 {
+									matchScore = 7.0
+								}
+								explanationText = fmt.Sprintf("Соответствует %d вашим навыкам", matchingSkills)
+							}
+						}
+					}
+
+					recommendedOrders = append(recommendedOrders, models.RecommendedOrder{
+						OrderID:     order.ID,
+						MatchScore:  matchScore,
+						Explanation: explanationText,
+					})
+
+					if len(recommendedOrders) >= limit {
+						break
+					}
+				}
+			}
+		} else {
+			// Если AI вообще не вернул рекомендаций, используем fallback полностью
+			fallbackParams := repository.ListFilterParams{
+				Status:    models.OrderStatusPublished,
+				Limit:     limit,
+				Offset:    0,
+				SortBy:    "proposals",
+				SortOrder: "desc",
+			}
+
+			// Если у фрилансера есть навыки, ищем заказы по навыкам
+			if len(profile.Skills) > 0 {
+				fallbackParams.Skills = profile.Skills
+			}
+
+			fallbackResult, err := s.repo.List(ctx, fallbackParams)
+			if err == nil && len(fallbackResult.Orders) > 0 {
+				fallbackOrders := make([]models.RecommendedOrder, 0, len(fallbackResult.Orders))
+				for _, order := range fallbackResult.Orders {
+					// Пропускаем заказы, на которые уже откликнулся
+					if alreadyRespondedOrders[order.ID] {
+						continue
+					}
+					// Пропускаем заказы, где уже выбран исполнитель
+					if order.Status == models.OrderStatusInProgress || order.Status == models.OrderStatusCompleted {
+						continue
+					}
+
+					matchScore := 6.5
+					explanationText := "Популярный заказ"
+
+					// Проверяем соответствие навыков - получаем требования отдельно
+					if len(profile.Skills) > 0 {
+						requirements, err := s.repo.ListRequirements(ctx, order.ID)
+						if err == nil && len(requirements) > 0 {
+							orderSkills := make(map[string]bool)
+							for _, req := range requirements {
+								orderSkills[req.Skill] = true
+							}
+							matchingSkills := 0
+							for _, skill := range profile.Skills {
+								if orderSkills[skill] {
+									matchingSkills++
+								}
+							}
+							if matchingSkills > 0 {
+								matchScore = 6.5 + float64(matchingSkills)*0.3
+								if matchScore > 7.0 {
+									matchScore = 7.0
+								}
+								explanationText = fmt.Sprintf("Соответствует %d вашим навыкам", matchingSkills)
+							}
+						}
+					}
+
+					fallbackOrders = append(fallbackOrders, models.RecommendedOrder{
+						OrderID:     order.ID,
+						MatchScore:  matchScore,
+						Explanation: explanationText,
+					})
+
+					if len(fallbackOrders) >= limit {
+						break
+					}
+				}
+				if len(fallbackOrders) > 0 {
+					return fallbackOrders, "Рекомендации на основе ваших навыков и популярности заказов", nil
+				}
+			}
+		}
+	}
+
+	// Сортируем по match_score и ограничиваем до limit
+	if len(recommendedOrders) > limit {
+		// Сортируем по убыванию match_score
+		for i := 0; i < len(recommendedOrders)-1; i++ {
+			for j := i + 1; j < len(recommendedOrders); j++ {
+				if recommendedOrders[i].MatchScore < recommendedOrders[j].MatchScore {
+					recommendedOrders[i], recommendedOrders[j] = recommendedOrders[j], recommendedOrders[i]
+				}
+			}
+		}
+		recommendedOrders = recommendedOrders[:limit]
+	}
+
+	// Если explanation пустой, добавляем базовое объяснение
+	if explanation == "" {
+		explanation = "Рекомендации на основе вашего профиля и навыков"
+	}
+
+	return recommendedOrders, explanation, nil
 }
 
 // StreamRecommendRelevantOrders рекомендует подходящие заказы для фрилансера потоково.
@@ -1453,10 +1817,222 @@ func (s *OrderService) StreamRecommendRelevantOrders(
 	}
 
 	if len(filteredOrders) == 0 {
+		// Fallback: возвращаем популярные заказы
+		fallbackParams := repository.ListFilterParams{
+			Status:    models.OrderStatusPublished,
+			Limit:     limit,
+			Offset:    0,
+			SortBy:    "proposals",
+			SortOrder: "desc",
+		}
+		fallbackResult, err := s.repo.List(ctx, fallbackParams)
+		if err == nil && len(fallbackResult.Orders) > 0 {
+			fallbackAlreadyResponded := make(map[uuid.UUID]bool)
+			fallbackProposals, _ := s.repo.ListMyProposals(ctx, freelancerID)
+			for _, proposal := range fallbackProposals {
+				fallbackAlreadyResponded[proposal.OrderID] = true
+			}
+
+			fallbackOrders := make([]models.RecommendedOrder, 0, len(fallbackResult.Orders))
+			for _, order := range fallbackResult.Orders {
+				if fallbackAlreadyResponded[order.ID] {
+					continue
+				}
+				matchScore := 6.5
+				if order.ProposalsCount != nil && *order.ProposalsCount > 0 {
+					matchScore = 6.5 + float64(*order.ProposalsCount)*0.1
+					if matchScore > 7.5 {
+						matchScore = 7.5
+					}
+				}
+				fallbackOrders = append(fallbackOrders, models.RecommendedOrder{
+					OrderID:     order.ID,
+					MatchScore:  matchScore,
+					Explanation: "Популярный заказ на платформе",
+				})
+				if len(fallbackOrders) >= limit {
+					break
+				}
+			}
+			if len(fallbackOrders) > 0 {
+				return onComplete(fallbackOrders, "Популярные заказы на платформе")
+			}
+		}
 		return onComplete([]models.RecommendedOrder{}, "Нет новых заказов для рекомендации")
 	}
 
-	return s.ai.StreamRecommendRelevantOrders(ctx, profile, aiPortfolio, filteredOrders, onDelta, onComplete)
+	// Используем AI для анализа, но с fallback
+	var aiRecommendedOrders []models.RecommendedOrder
+	var aiExplanation string
+	aiErr := s.ai.StreamRecommendRelevantOrders(ctx, profile, aiPortfolio, filteredOrders, onDelta, func(orders []models.RecommendedOrder, expl string) error {
+		aiRecommendedOrders = orders
+		aiExplanation = expl
+		return nil
+	})
+
+	// Если AI вернул рекомендации, используем их
+	if aiErr == nil && len(aiRecommendedOrders) > 0 {
+		// Дополняем до limit если нужно
+		if len(aiRecommendedOrders) < limit {
+			recommendedOrderIDs := make(map[uuid.UUID]bool)
+			for _, rec := range aiRecommendedOrders {
+				recommendedOrderIDs[rec.OrderID] = true
+			}
+
+			fallbackAlreadyResponded2 := make(map[uuid.UUID]bool)
+			fallbackProposals2, _ := s.repo.ListMyProposals(ctx, freelancerID)
+			for _, proposal := range fallbackProposals2 {
+				fallbackAlreadyResponded2[proposal.OrderID] = true
+			}
+
+			fallbackParams := repository.ListFilterParams{
+				Status:    models.OrderStatusPublished,
+				Limit:     limit * 2,
+				Offset:    0,
+				SortBy:    "proposals",
+				SortOrder: "desc",
+			}
+			if len(profile.Skills) > 0 {
+				fallbackParams.Skills = profile.Skills
+			}
+
+			fallbackResult, err := s.repo.List(ctx, fallbackParams)
+			if err == nil && len(fallbackResult.Orders) > 0 {
+				for _, order := range fallbackResult.Orders {
+					if recommendedOrderIDs[order.ID] || alreadyRespondedOrders[order.ID] {
+						continue
+					}
+					if order.Status == models.OrderStatusInProgress || order.Status == models.OrderStatusCompleted {
+						continue
+					}
+
+					matchScore := 6.0
+					explanationText := "Заказ на основе ваших навыков"
+					if len(profile.Skills) > 0 {
+						requirements, err := s.repo.ListRequirements(ctx, order.ID)
+						if err == nil && len(requirements) > 0 {
+							orderSkills := make(map[string]bool)
+							for _, req := range requirements {
+								orderSkills[req.Skill] = true
+							}
+							matchingSkills := 0
+							for _, skill := range profile.Skills {
+								if orderSkills[skill] {
+									matchingSkills++
+								}
+							}
+							if matchingSkills > 0 {
+								matchScore = 6.5 + float64(matchingSkills)*0.3
+								if matchScore > 7.0 {
+									matchScore = 7.0
+								}
+								explanationText = fmt.Sprintf("Соответствует %d вашим навыкам", matchingSkills)
+							}
+						}
+					}
+
+					aiRecommendedOrders = append(aiRecommendedOrders, models.RecommendedOrder{
+						OrderID:     order.ID,
+						MatchScore:  matchScore,
+						Explanation: explanationText,
+					})
+
+					if len(aiRecommendedOrders) >= limit {
+						break
+					}
+				}
+			}
+		}
+
+		// Сортируем и ограничиваем
+		if len(aiRecommendedOrders) > limit {
+			for i := 0; i < len(aiRecommendedOrders)-1; i++ {
+				for j := i + 1; j < len(aiRecommendedOrders); j++ {
+					if aiRecommendedOrders[i].MatchScore < aiRecommendedOrders[j].MatchScore {
+						aiRecommendedOrders[i], aiRecommendedOrders[j] = aiRecommendedOrders[j], aiRecommendedOrders[i]
+					}
+				}
+			}
+			aiRecommendedOrders = aiRecommendedOrders[:limit]
+		}
+
+		if aiExplanation == "" {
+			aiExplanation = "Рекомендации на основе вашего профиля и навыков"
+		}
+
+		return onComplete(aiRecommendedOrders, aiExplanation)
+	}
+
+	// Fallback: если AI не сработал, используем популярные заказы
+	fallbackAlreadyResponded3 := make(map[uuid.UUID]bool)
+	fallbackProposals3, _ := s.repo.ListMyProposals(ctx, freelancerID)
+	for _, proposal := range fallbackProposals3 {
+		fallbackAlreadyResponded3[proposal.OrderID] = true
+	}
+
+	fallbackParams := repository.ListFilterParams{
+		Status:    models.OrderStatusPublished,
+		Limit:     limit,
+		Offset:    0,
+		SortBy:    "proposals",
+		SortOrder: "desc",
+	}
+	if len(profile.Skills) > 0 {
+		fallbackParams.Skills = profile.Skills
+	}
+
+	fallbackResult, err := s.repo.List(ctx, fallbackParams)
+	if err == nil && len(fallbackResult.Orders) > 0 {
+		fallbackOrders := make([]models.RecommendedOrder, 0, len(fallbackResult.Orders))
+		for _, order := range fallbackResult.Orders {
+			if fallbackAlreadyResponded3[order.ID] {
+				continue
+			}
+			if order.Status == models.OrderStatusInProgress || order.Status == models.OrderStatusCompleted {
+				continue
+			}
+
+			matchScore := 6.5
+			explanationText := "Популярный заказ"
+			if len(profile.Skills) > 0 {
+				requirements, err := s.repo.ListRequirements(ctx, order.ID)
+				if err == nil && len(requirements) > 0 {
+					orderSkills := make(map[string]bool)
+					for _, req := range requirements {
+						orderSkills[req.Skill] = true
+					}
+					matchingSkills := 0
+					for _, skill := range profile.Skills {
+						if orderSkills[skill] {
+							matchingSkills++
+						}
+					}
+					if matchingSkills > 0 {
+						matchScore = 6.5 + float64(matchingSkills)*0.3
+						if matchScore > 7.0 {
+							matchScore = 7.0
+						}
+						explanationText = fmt.Sprintf("Соответствует %d вашим навыкам", matchingSkills)
+					}
+				}
+			}
+
+			fallbackOrders = append(fallbackOrders, models.RecommendedOrder{
+				OrderID:     order.ID,
+				MatchScore:  matchScore,
+				Explanation: explanationText,
+			})
+
+			if len(fallbackOrders) >= limit {
+				break
+			}
+		}
+		if len(fallbackOrders) > 0 {
+			return onComplete(fallbackOrders, "Рекомендации на основе ваших навыков и популярности заказов")
+		}
+	}
+
+	return onComplete([]models.RecommendedOrder{}, "Нет новых заказов для рекомендации")
 }
 
 // RecommendPriceAndTimeline рекомендует цену и сроки для отклика.
