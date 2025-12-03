@@ -214,7 +214,7 @@ func main() {
 	)
 
 	server := &http.Server{
-		Addr:    ":" + cfg.HTTPPort,
+		Addr:    "0.0.0.0:" + cfg.HTTPPort,
 		Handler: engine,
 	}
 
