@@ -229,8 +229,9 @@ func (r *OrderRepository) Update(ctx context.Context, order *models.Order, requi
 		    status = $5::order_status,
 		    deadline_at = $6,
 		    ai_summary = $7,
+		    freelancer_id = $8,
 		    updated_at = NOW()
-		WHERE id = $8 AND client_id = $9
+		WHERE id = $9 AND client_id = $10
 		RETURNING updated_at
 	`
 
@@ -245,6 +246,7 @@ func (r *OrderRepository) Update(ctx context.Context, order *models.Order, requi
 		order.Status,
 		order.DeadlineAt,
 		order.AISummary,
+		order.FreelancerID,
 		order.ID,
 		order.ClientID,
 	).Scan(&updatedAt)
